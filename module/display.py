@@ -1,4 +1,5 @@
-""" This module contains the DisplayTranslation class which is responsible for displaying the real-time translation on the GUI. """
+""" This module contains the DisplayTranslation class
+which is responsible for displaying the real-time translation on the GUI. """
 
 import tkinter as tk
 

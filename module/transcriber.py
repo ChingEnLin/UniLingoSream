@@ -1,10 +1,10 @@
 """ Transcriber module for transcribing and translating audio data """
-
 import logging
+
 from google.cloud import speech # pylint: disable=import-error
 from google.cloud import translate_v2 as translate # pylint: disable=import-error
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('root')
 
 class TranscriberTranslator:
     """ Transcriber module for transcribing and translating audio data """

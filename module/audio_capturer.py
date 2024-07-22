@@ -2,13 +2,13 @@
 transcribing it using the transcriber_translator module. """
 
 import io
-import logging
 import queue
 import threading
+import logging
 from scipy.io.wavfile import write
 import sounddevice as sd
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('root')
 
 class AudioCapturer: # pylint: disable=too-many-instance-attributes
     """ Captures audio from the microphone and transcribes it
@@ -30,10 +30,9 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
         """ This callback function is called by the sounddevice stream
         whenever new audio data is available. """
         if status:
-            print(status)
-        self.q.put(indata.copy())
-        logger.info("Audio callback - frames: %s, time: %s, status: %s, indata: %s",
+            logger.warning("Audio callback - frames: %s, time: %s, status: %s, indata: %s",
                     frames, time, status, indata.shape)
+        self.q.put(indata.copy())
 
     def start_stream(self):
         """ Starts the audio stream and a separate thread for transcribing the audio. """
