@@ -1,6 +1,7 @@
 # audio_capturer.py
 
-# from scipy.io.wavfile import write
+import io
+from scipy.io.wavfile import write
 import queue
 import threading
 import sounddevice as sd
@@ -29,10 +30,14 @@ class AudioCapturer:
     def transcribe_audio_from_stream(self):
         while True:
             audio_data = self.q.get()
-            # output audio data to a WAV file
-            # write("output.wav", self.sample_rate, audio_data)
-            audio_bytes = audio_data.tobytes()
+            audio_bytes = self._convert_to_wav_bytes(audio_data)
             self.transcribed_text = self.transcriber_translator.transcribe_and_translate(audio_bytes)
+
+    def _convert_to_wav_bytes(self, audio_data):
+        bytes_wav = bytes()
+        byte_io = io.BytesIO(bytes_wav)
+        write(byte_io, self.sample_rate, audio_data)
+        return byte_io.read()
 
     def get_transcription(self):
         return self.transcribed_text

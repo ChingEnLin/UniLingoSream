@@ -16,7 +16,7 @@ def update_display(capturer, display):
             display.update_label(transcribed_text)
 
 if __name__ == "__main__":
-    transcriber_translator = TranscriberTranslator(source_language="ja-JP", target_language="zh-TW")
+    transcriber_translator = TranscriberTranslator(source_language="ja-JP", target_language="zh-TW", audio_channel_count=2)
     audio_capturer = AudioCapturer(transcriber_translator, channels=1, block_duration=10)
     display_translation = DisplayTranslation()
 
