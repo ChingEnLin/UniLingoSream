@@ -23,7 +23,10 @@ if __name__ == "__main__":
     transcriber_translator = TranscriberTranslator(source_language="ja-JP",
                                                    target_language="zh-TW",
                                                    audio_channel_count=2)
-    audio_capturer = AudioCapturer(transcriber_translator, channels=1, block_duration=10)
+    audio_capturer = AudioCapturer(transcriber_translator,
+                                   channels=1,
+                                   chunk_duration=3,
+                                   overlap_duration=2)
     display_translation = DisplayTranslation()
 
     logger.info("Starting audio capturer...")
