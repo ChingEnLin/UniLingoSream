@@ -25,8 +25,8 @@ if __name__ == "__main__":
                                                    audio_channel_count=2)
     audio_capturer = AudioCapturer(transcriber_translator,
                                    channels=1,
-                                   chunk_duration=3,
-                                   overlap_duration=2)
+                                   chunk_duration=10,
+                                   increment_duration=2)
     display_translation = DisplayTranslation()
 
     logger.info("Starting audio capturer...")

@@ -17,14 +17,14 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
     def __init__(self, transcriber_translator, # pylint: disable=too-many-arguments
                  sample_rate=16000,
                  channels=1,
-                 chunk_duration=1,
-                 overlap_duration=1):
+                 chunk_duration=5,
+                 increment_duration=1):
         self.sample_rate = sample_rate
         self.channels = channels
         self.chunk_duration = chunk_duration
-        self.overlap_duration = overlap_duration
+        self.increment_duration = increment_duration
         self.chunk_size = int(sample_rate * chunk_duration)
-        self.overlap_size = int(sample_rate * overlap_duration)
+        self.increment_size = int(sample_rate * increment_duration)
         self.audio_buffer = np.zeros((0, channels), dtype=np.float32)
         self.q = queue.Queue()
         self.transcriber_translator = transcriber_translator
@@ -32,7 +32,7 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
         self.stream = sd.InputStream(callback=self.audio_callback,
                                      channels=self.channels,
                                      samplerate=self.sample_rate,
-                                     blocksize=self.chunk_size)
+                                     blocksize=self.increment_size)
 
     def _convert_to_wav_bytes(self, audio_data):
         """ Converts audio data to WAV format. """
@@ -57,11 +57,10 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
             logger.warning("Audio callback - frames: %s, time: %s, status: %s, indata: %s",
                     frames, time, status, indata.shape)
         self.audio_buffer = np.append(self.audio_buffer, indata, axis=0)
+        self.q.put(self.audio_buffer)
 
         if len(self.audio_buffer) >= self.chunk_size:
-            audio_chunk = self.audio_buffer[:self.chunk_size]
-            self.q.put(audio_chunk)
-            self.audio_buffer = self.audio_buffer[self.chunk_size - self.overlap_size:]
+            self.audio_buffer = np.zeros((0, self.channels), dtype=np.float32)
 
     def start_stream(self):
         """ Starts the audio stream and a separate thread for transcribing the audio. """
