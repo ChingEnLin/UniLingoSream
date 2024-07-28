@@ -8,6 +8,7 @@ import logging
 import numpy as np
 from scipy.io.wavfile import write
 import sounddevice as sd
+from module.audio_processer import AudioProcessor
 
 logger = logging.getLogger('root')
 
@@ -18,13 +19,14 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
                  sample_rate=16000,
                  channels=1,
                  chunk_duration=5,
-                 increment_duration=1):
+                 overlap_duration=1,
+                 speech_energy_threshold=0.1):
         self.sample_rate = sample_rate
         self.channels = channels
         self.chunk_duration = chunk_duration
-        self.increment_duration = increment_duration
+        self.overlap_duration = overlap_duration
         self.chunk_size = int(sample_rate * chunk_duration)
-        self.increment_size = int(sample_rate * increment_duration)
+        self.overlap_size = int(sample_rate * overlap_duration)
         self.audio_buffer = np.zeros((0, channels), dtype=np.float32)
         self.q = queue.Queue()
         self.transcriber_translator = transcriber_translator
@@ -32,7 +34,9 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
         self.stream = sd.InputStream(callback=self.audio_callback,
                                      channels=self.channels,
                                      samplerate=self.sample_rate,
-                                     blocksize=self.increment_size)
+                                     blocksize=self.chunk_size)
+        self.audio_processor = AudioProcessor(sample_rate=self.sample_rate,
+                                              energy_threshold=speech_energy_threshold)
 
     def _convert_to_wav_bytes(self, audio_data):
         """ Converts audio data to WAV format. """
@@ -57,9 +61,14 @@ class AudioCapturer: # pylint: disable=too-many-instance-attributes
             logger.warning("Audio callback - frames: %s, time: %s, status: %s, indata: %s",
                     frames, time, status, indata.shape)
         self.audio_buffer = np.append(self.audio_buffer, indata, axis=0)
-        self.q.put(self.audio_buffer)
 
-        if len(self.audio_buffer) >= self.chunk_size:
+        if len(self.audio_buffer) >= self.chunk_size + self.overlap_size:
+            audio_chunk = self.audio_buffer[:self.chunk_size + self.overlap_size]
+            if self.audio_processor.detect_speech(audio_chunk):
+                self.q.put(audio_chunk)
+            self.audio_buffer = self.audio_buffer[self.chunk_size:]
+
+        if len(self.audio_buffer) < self.chunk_size:
             self.audio_buffer = np.zeros((0, self.channels), dtype=np.float32)
 
     def start_stream(self):

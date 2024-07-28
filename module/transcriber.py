@@ -1,5 +1,6 @@
 """ Transcriber module for transcribing and translating audio data """
 import logging
+import time
 
 from google.cloud import speech # pylint: disable=import-error
 from google.cloud import translate_v2 as translate # pylint: disable=import-error
@@ -45,6 +46,9 @@ class TranscriberTranslator:
 
     def transcribe_and_translate(self, audio_data):
         """ Transcribes and translates the audio data """
+        start_time = time.time()
         transcription = self.transcribe_audio(audio_data)
         translation = self.translate_text(transcription)
+        end_time = time.time()
+        logger.info("Transcription took %s seconds", end_time - start_time)
         return translation
