@@ -25,7 +25,8 @@ class TranscriberTranslator:
                     "model": "gemini-3.5-live-translate-preview",
                     "source_language": "ja-JP",
                     "target_language": "zh-TW",
-                    "subtitle_timeout_seconds": 4.0
+                    "subtitle_timeout_seconds": 4.0,
+                    "sentence_pause_seconds": 1.5
                 },
                 "audio": {
                     "device_name": "BlackHole 2ch",
@@ -47,6 +48,8 @@ class TranscriberTranslator:
             self.audio_config["channels"] = kwargs["audio_channel_count"]
         if "subtitle_timeout_seconds" in kwargs:
             self.api_config["subtitle_timeout_seconds"] = kwargs["subtitle_timeout_seconds"]
+        if "sentence_pause_seconds" in kwargs:
+            self.api_config["sentence_pause_seconds"] = kwargs["sentence_pause_seconds"]
 
         self.client = genai.Client()
         self.model_id = self.api_config.get("model", "gemini-3.5-live-translate-preview")
@@ -55,6 +58,7 @@ class TranscriberTranslator:
         self.is_new_turn = True
         self.last_activity_time = 0.0
         self.timeout_seconds = self.api_config.get("subtitle_timeout_seconds", 4.0)
+        self.pause_threshold = self.api_config.get("sentence_pause_seconds", 1.5)
         self.session = None
 
     def get_connect_config(self):
@@ -90,6 +94,7 @@ class TranscriberTranslator:
     async def receive_translation_loop(self):
         """ Listens for incoming translated text from the WebSocket """
         try:
+            sentence_enders = ("。", "？", "！", ".", "?", "!", "\n")
             async for response in self.session.receive():
                 if response.server_content:
                     content = response.server_content
@@ -98,14 +103,27 @@ class TranscriberTranslator:
                     if content.output_transcription:
                         text = content.output_transcription.text
                         if text:
+                            current_time = asyncio.get_event_loop().time()
+                            
+                            # If there was a pause of more than sentence_pause_seconds, start a new turn
+                            if self.last_activity_time > 0:
+                                pause_duration = current_time - self.last_activity_time
+                                if pause_duration > self.pause_threshold:
+                                    self.is_new_turn = True
+                            
                             if self.is_new_turn:
                                 self.current_turn_translation = ""
                                 self.is_new_turn = False
                             
                             self.current_turn_translation += text
                             self.latest_translation = self.current_turn_translation.strip()
-                            self.last_activity_time = asyncio.get_event_loop().time()
+                            self.last_activity_time = current_time
                             logger.info("Translation: %s", self.latest_translation)
+                            
+                            # Instant split: if the sentence ends with punctuation, mark next turn as new
+                            if self.latest_translation.endswith(sentence_enders):
+                                logger.info("Sentence boundary punctuation detected. Setting is_new_turn=True.")
+                                self.is_new_turn = True
                             
                     # 2. Check if the turn is complete
                     if content.turn_complete:
@@ -119,15 +137,16 @@ class TranscriberTranslator:
             raise e
 
     async def clear_subtitle_timeout_loop(self):
-        """ Clears the subtitle overlay if no new translation activity occurs after a turn is complete """
+        """ Clears the subtitle overlay if no new translation activity occurs after a timeout """
         try:
             while True:
                 await asyncio.sleep(0.5)
-                if self.is_new_turn and self.latest_translation and self.last_activity_time:
+                if self.latest_translation and self.last_activity_time:
                     elapsed = asyncio.get_event_loop().time() - self.last_activity_time
                     if elapsed > self.timeout_seconds:
                         logger.info("Subtitle timeout reached. Clearing subtitle overlay.")
                         self.latest_translation = ""
+                        self.is_new_turn = True
         except asyncio.CancelledError:
             pass
 

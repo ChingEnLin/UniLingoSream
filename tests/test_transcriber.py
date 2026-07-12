@@ -152,16 +152,17 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             pass
 
     async def test_clear_subtitle_timeout_loop(self):
-        """ Test that clear loop resets translation after silence if turn is complete """
+        """ Test that clear loop resets translation after silence """
         translator = TranscriberTranslator(config_path="dummy.json", subtitle_timeout_seconds=0.1)
         translator.latest_translation = "Some subtitle text"
-        translator.is_new_turn = True
+        translator.is_new_turn = False
         translator.last_activity_time = asyncio.get_event_loop().time() - 0.2 # exceeded 0.1s
         
         clear_task = asyncio.create_task(translator.clear_subtitle_timeout_loop())
         await asyncio.sleep(0.6) # let it run once (since it sleeps 0.5s)
         
         self.assertEqual(translator.get_transcription(), "")
+        self.assertTrue(translator.is_new_turn)
         
         clear_task.cancel()
         try:
@@ -169,21 +170,105 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
-    async def test_clear_subtitle_no_clear_during_turn(self):
-        """ Test that clear loop does NOT clear translation if turn is still active """
-        translator = TranscriberTranslator(config_path="dummy.json", subtitle_timeout_seconds=0.1)
-        translator.latest_translation = "Active translation text"
-        translator.is_new_turn = False # turn still in progress
-        translator.last_activity_time = asyncio.get_event_loop().time() - 0.2
+    async def test_receive_translation_loop_temporal_pause(self):
+        """ Test that receive loop resets turn and starts new sentence when pause threshold exceeded """
+        translator = TranscriberTranslator(config_path="dummy.json", sentence_pause_seconds=0.1)
+        mock_session = MagicMock()
+        translator.session = mock_session
         
-        clear_task = asyncio.create_task(translator.clear_subtitle_timeout_loop())
+        mock_response_1 = MagicMock()
+        mock_response_1.server_content = MagicMock()
+        mock_response_1.server_content.output_transcription = MagicMock()
+        mock_response_1.server_content.output_transcription.text = "Hello"
+        mock_response_1.server_content.turn_complete = False
+        
+        mock_response_2 = MagicMock()
+        mock_response_2.server_content = MagicMock()
+        mock_response_2.server_content.output_transcription = MagicMock()
+        mock_response_2.server_content.output_transcription.text = "New Turn"
+        mock_response_2.server_content.turn_complete = False
+        
+        async def mock_receive_generator():
+            yield mock_response_1
+            # Wait longer than 0.1s to exceed pause_threshold
+            await asyncio.sleep(0.15)
+            yield mock_response_2
+            while True:
+                await asyncio.sleep(1)
+                
+        mock_session.receive = MagicMock(return_value=mock_receive_generator())
+        
+        loop_task = asyncio.create_task(translator.receive_translation_loop())
+        
+        # Check first chunk
         await asyncio.sleep(0.02)
+        self.assertEqual(translator.get_transcription(), "Hello")
         
-        self.assertEqual(translator.get_transcription(), "Active translation text")
+        # Check second chunk starts a new turn because of temporal pause
+        await asyncio.sleep(0.15)
+        self.assertEqual(translator.get_transcription(), "New Turn")
         
-        clear_task.cancel()
+        loop_task.cancel()
         try:
-            await clear_task
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_receive_translation_loop_punctuation_split(self):
+        """ Test that receive loop resets turn immediately when sentence-ending punctuation is received """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        mock_session = MagicMock()
+        translator.session = mock_session
+        
+        mock_response_1 = MagicMock()
+        mock_response_1.server_content = MagicMock()
+        mock_response_1.server_content.output_transcription = MagicMock()
+        mock_response_1.server_content.output_transcription.text = "你好。"
+        mock_response_1.server_content.turn_complete = False
+        
+        mock_response_2 = MagicMock()
+        mock_response_2.server_content = MagicMock()
+        mock_response_2.server_content.output_transcription = MagicMock()
+        mock_response_2.server_content.output_transcription.text = "吃飽了嗎？"
+        mock_response_2.server_content.turn_complete = False
+
+        mock_response_3 = MagicMock()
+        mock_response_3.server_content = MagicMock()
+        mock_response_3.server_content.output_transcription = MagicMock()
+        mock_response_3.server_content.output_transcription.text = "好的"
+        mock_response_3.server_content.turn_complete = False
+        
+        async def mock_receive_generator():
+            yield mock_response_1
+            await asyncio.sleep(0.01)
+            yield mock_response_2
+            await asyncio.sleep(0.01)
+            yield mock_response_3
+            while True:
+                await asyncio.sleep(1)
+                
+        mock_session.receive = MagicMock(return_value=mock_receive_generator())
+        
+        loop_task = asyncio.create_task(translator.receive_translation_loop())
+        
+        # Check first sentence ends with 。 and splits immediately
+        await asyncio.sleep(0.005)
+        self.assertEqual(translator.get_transcription(), "你好。")
+        self.assertTrue(translator.is_new_turn) # should be set to True instantly
+        
+        # Check second sentence begins fresh and accumulates, then splits on ？
+        await asyncio.sleep(0.015)
+        self.assertEqual(translator.get_transcription(), "吃飽了嗎？")
+        self.assertTrue(translator.is_new_turn)
+        
+        # Check third sentence begins fresh and accumulates
+        await asyncio.sleep(0.015)
+        self.assertEqual(translator.get_transcription(), "好的")
+        self.assertFalse(translator.is_new_turn) # no punctuation ender, so False
+        
+        loop_task.cancel()
+        try:
+            await loop_task
         except asyncio.CancelledError:
             pass
 
