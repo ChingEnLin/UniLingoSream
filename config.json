@@ -1,0 +1,24 @@
+{
+  "api": {
+    "model": "gemini-3.5-live-translate-preview",
+    "source_language": "ja-JP",
+    "target_language": "zh-TW"
+  },
+  "audio": {
+    "device_name": "BlackHole 2ch",
+    "sample_rate": 16000,
+    "channels": 1
+  },
+  "ui": {
+    "font_family": "Helvetica",
+    "font_size": 24,
+    "text_color": "#FFFFFF",
+    "bg_color": "#000000",
+    "bg_opacity": 0.6,
+    "window_height": 90,
+    "window_width_percent": 80,
+    "bottom_margin": 100,
+    "always_on_top": true,
+    "draggable": true
+  }
+}

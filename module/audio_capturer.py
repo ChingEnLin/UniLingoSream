@@ -1,94 +1,87 @@
-""" This module is responsible for capturing audio from the microphone and
-transcribing it using the transcriber_translator module. """
-
-import io
-import queue
-import threading
 import logging
-import numpy as np
-from scipy.io.wavfile import write
 import sounddevice as sd
-from module.audio_processer import AudioProcessor
+import json
+import asyncio
 
-logger = logging.getLogger('root')
+logger = logging.getLogger(__name__)
 
-class AudioCapturer: # pylint: disable=too-many-instance-attributes
-    """ Captures audio from the microphone and transcribes it
-    using the provided transcriber_translator. """
-    def __init__(self, transcriber_translator, # pylint: disable=too-many-arguments
-                 sample_rate=16000,
-                 channels=1,
-                 chunk_duration=5,
-                 overlap_duration=1,
-                 speech_energy_threshold=0.1):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.chunk_duration = chunk_duration
-        self.overlap_duration = overlap_duration
-        self.chunk_size = int(sample_rate * chunk_duration)
-        self.overlap_size = int(sample_rate * overlap_duration)
-        self.audio_buffer = np.zeros((0, channels), dtype=np.float32)
-        self.q = queue.Queue()
-        self.transcriber_translator = transcriber_translator
-        self.transcribed_text = ""
-        self.stream = sd.InputStream(callback=self.audio_callback,
-                                     channels=self.channels,
-                                     samplerate=self.sample_rate,
-                                     blocksize=self.chunk_size)
-        self.audio_processor = AudioProcessor(sample_rate=self.sample_rate,
-                                              energy_threshold=speech_energy_threshold)
+class AudioCapturer:
+    """Captures audio from microphone in raw 16-bit PCM mono format
+    and pushes it thread-safely to an asyncio queue.
+    """
+    BLOCK_DURATION_SEC = 0.1
 
-    def _convert_to_wav_bytes(self, audio_data):
-        """ Converts audio data to WAV format. """
-        bytes_wav = bytes()
-        byte_io = io.BytesIO(bytes_wav)
-        write(byte_io, self.sample_rate, audio_data)
-        return byte_io.read()
+    def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None):
+        DEFAULT_CONFIG = {
+            "device_name": "BlackHole 2ch",
+            "sample_rate": 16000,
+            "channels": 1
+        }
+        if config is None:
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    config = data.get("audio", DEFAULT_CONFIG)
+            except Exception as e:
+                logger.warning("Failed to load config from %s: %s. Using default audio config.", config_path, e)
+                config = DEFAULT_CONFIG
 
-    def _combine_texts(self, existing_text, new_text):
-        if existing_text and existing_text[-1].isalnum() and new_text and new_text[0].isalnum():
-            # If last char of existing and first char of new text are both alphanumeric, add a space
-            return existing_text + " " + new_text
-        # Return only new text if existing text exceeds 20 characters
-        if len(existing_text) > 20:
-            return new_text
-        return existing_text + new_text
+        self.loop = loop
+        self.audio_queue = audio_queue
+        self.sample_rate = config.get("sample_rate", DEFAULT_CONFIG["sample_rate"])
+        self.channels = config.get("channels", DEFAULT_CONFIG["channels"])
+        device_name = config.get("device_name", DEFAULT_CONFIG["device_name"])
+        
+        # Stream in ~100ms chunks (1600 samples @ 16kHz)
+        self.blocksize = int(self.sample_rate * self.BLOCK_DURATION_SEC)
+        
+        # Find device index by name
+        self.device_index = self._find_device_index(device_name)
+        
+        self.stream = sd.InputStream(
+            callback=self.audio_callback,
+            channels=self.channels,
+            samplerate=self.sample_rate,
+            blocksize=self.blocksize,
+            device=self.device_index,
+            dtype='int16' # Raw 16-bit PCM expected by Gemini
+        )
+
+    def _find_device_index(self, target_name):
+        """Find the index of the audio input device matching target_name."""
+        try:
+            devices = sd.query_devices()
+            for idx, dev in enumerate(devices):
+                if target_name.lower() in dev["name"].lower():
+                    logger.info("Found target audio device %s at index %d", dev["name"], idx)
+                    return idx
+        except Exception as e:
+            logger.warning("Error querying audio devices: %s", e)
+        logger.warning("Target device '%s' not found. Using system default input.", target_name)
+        return None
+
+    def _safe_put(self, raw_bytes):
+        """Thread-safe helper to put audio data in the queue, handling QueueFull."""
+        try:
+            self.audio_queue.put_nowait(raw_bytes)
+        except asyncio.QueueFull:
+            logger.warning("Audio queue is full, dropping frame.")
 
     def audio_callback(self, indata, frames, time, status):
-        """ This callback function is called by the sounddevice stream
-        whenever new audio data is available. """
+        """Callback function called by sounddevice for each block of input audio."""
         if status:
-            logger.warning("Audio callback - frames: %s, time: %s, status: %s, indata: %s",
-                    frames, time, status, indata.shape)
-        self.audio_buffer = np.append(self.audio_buffer, indata, axis=0)
-
-        if len(self.audio_buffer) >= self.chunk_size + self.overlap_size:
-            audio_chunk = self.audio_buffer[:self.chunk_size + self.overlap_size]
-            if self.audio_processor.detect_speech(audio_chunk):
-                self.q.put(audio_chunk)
-            self.audio_buffer = self.audio_buffer[self.chunk_size:]
-
-        if len(self.audio_buffer) < self.chunk_size:
-            self.audio_buffer = np.zeros((0, self.channels), dtype=np.float32)
+            logger.warning("Audio status warning: %s", status)
+        # Convert captured numpy array to raw bytes
+        raw_bytes = indata.tobytes()
+        # Thread-safely push raw bytes to the asyncio queue
+        self.loop.call_soon_threadsafe(self._safe_put, raw_bytes)
 
     def start_stream(self):
-        """ Starts the audio stream and a separate thread for transcribing the audio. """
+        """Start the audio stream."""
         self.stream.start()
-        threading.Thread(target=self.transcribe_audio_from_stream).start()
+        logger.info("Audio stream started.")
 
     def stop_stream(self):
-        """ Stops the audio stream."""
+        """Stop the audio stream."""
         self.stream.stop()
-        logging.info("Audio capture stream stopped.")
-
-    def transcribe_audio_from_stream(self):
-        """ Continuously transcribes audio data from the queue. """
-        while True:
-            audio_data = self.q.get()
-            audio_bytes = self._convert_to_wav_bytes(audio_data)
-            self.transcribed_text = self.transcriber_translator.transcribe_and_translate(
-                audio_bytes)
-
-    def get_transcription(self):
-        """ Returns the transcribed text. """
-        return self.transcribed_text
+        logger.info("Audio stream stopped.")

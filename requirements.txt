@@ -1,8 +1,5 @@
-google-auth
-google-cloud-core
-google-cloud-speech
-google-cloud-translate
-logger
+google-genai
+python-dotenv
 numpy
 scipy
 sounddevice

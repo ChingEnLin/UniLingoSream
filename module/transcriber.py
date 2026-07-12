@@ -1,54 +1,161 @@
-""" Transcriber module for transcribing and translating audio data """
+import asyncio
 import logging
-import time
-
-from google.cloud import speech # pylint: disable=import-error
-from google.cloud import translate_v2 as translate # pylint: disable=import-error
+import json
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger('root')
 
 class TranscriberTranslator:
-    """ Transcriber module for transcribing and translating audio data """
-    def __init__(self, source_language="en",
-                 target_language="zh-TW",
-                 sample_rate=16000,
-                 audio_channel_count=1):
-        self.sample_rate = sample_rate
-        self.audio_channel_count = audio_channel_count
-        self.source_language = source_language
-        self.target_language = target_language
-        self.speech_client = speech.SpeechClient()
-        self.translate_client = translate.Client()
+    """ Transcriber module for transcribing and translating audio data using Gemini Live Client """
+    def __init__(self, config_path="config.json", **kwargs):
+        self.full_config = None
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                self.full_config = json.load(f)
+        except FileNotFoundError:
+            logger.info("Config file not found: %s. Using default configurations.", config_path)
+        except Exception as e:
+            logger.warning("Failed to load config file: %s (%s). Using default configurations.", config_path, e)
 
-    def transcribe_audio(self, audio_data):
-        """ Transcribes the audio data """
-        audio = speech.RecognitionAudio(content=audio_data)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=self.sample_rate,
-            audio_channel_count=self.audio_channel_count,
-            language_code=self.source_language,
-            model="default",
+        if not self.full_config:
+            # Fallback/default config if config.json is missing or unreadable
+            self.full_config = {
+                "api": {
+                    "model": "gemini-3.5-live-translate-preview",
+                    "source_language": "ja-JP",
+                    "target_language": "zh-TW"
+                },
+                "audio": {
+                    "device_name": "BlackHole 2ch",
+                    "sample_rate": 16000,
+                    "channels": 1
+                }
+            }
+        self.api_config = self.full_config.get("api", {})
+        self.audio_config = self.full_config.get("audio", {})
+        
+        # Override with kwargs if provided for backward compatibility
+        if "target_language" in kwargs:
+            self.api_config["target_language"] = kwargs["target_language"]
+        if "source_language" in kwargs:
+            self.api_config["source_language"] = kwargs["source_language"]
+        if "sample_rate" in kwargs:
+            self.audio_config["sample_rate"] = kwargs["sample_rate"]
+        if "audio_channel_count" in kwargs:
+            self.audio_config["channels"] = kwargs["audio_channel_count"]
+
+        self.client = genai.Client()
+        self.model_id = self.api_config.get("model", "gemini-3.5-live-translate-preview")
+        self.latest_translation = ""
+        self.session = None
+
+    def get_connect_config(self):
+        """ Generates LiveConnectConfig for the Gemini session """
+        return types.LiveConnectConfig(
+            response_modalities=[types.Modality.AUDIO],
+            translation_config=types.TranslationConfig(
+                target_language_code=self.api_config.get("target_language", "zh-TW")
+            ),
+            output_audio_transcription=types.AudioTranscriptionConfig()
         )
-        response = self.speech_client.recognize(config=config, audio=audio)
-        transcription = ""
-        for result in response.results:
-            transcription += result.alternatives[0].transcript + " "
-        logger.info("Script: %s", transcription)
-        return transcription.strip()
 
-    def translate_text(self, text):
-        """ Translates the text """
-        result = self.translate_client.translate(text,
-                                                 source_language=self.source_language,
-                                                 target_language=self.target_language)
-        return result["translatedText"]
+    async def send_audio_loop(self, audio_queue: asyncio.Queue):
+        """ Pulls audio chunks from the queue and streams to Gemini Live API """
+        try:
+            while True:
+                chunk = await audio_queue.get()
+                if self.session:
+                    try:
+                        await self.session.send_realtime_input(
+                            audio=types.Blob(
+                                data=chunk,
+                                mime_type=f"audio/pcm;rate={self.audio_config.get('sample_rate', 16000)}"
+                            )
+                        )
+                    except Exception as e:
+                        logger.error("Error sending realtime input: %s", e)
+                        raise e
+                audio_queue.task_done()
+        except asyncio.CancelledError:
+            pass
 
-    def transcribe_and_translate(self, audio_data):
-        """ Transcribes and translates the audio data """
-        start_time = time.time()
-        transcription = self.transcribe_audio(audio_data)
-        translation = self.translate_text(transcription)
-        end_time = time.time()
-        logger.info("Transcription took %s seconds", end_time - start_time)
-        return translation
+    async def receive_translation_loop(self):
+        """ Listens for incoming translated text from the WebSocket """
+        try:
+            async for response in self.session.receive():
+                if response.server_content:
+                    content = response.server_content
+                    if content.output_transcription:
+                        text = content.output_transcription.text
+                        if text and text.strip():
+                            self.latest_translation = text.strip()
+                            logger.info("Translation: %s", self.latest_translation)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("Error receiving from Live session: %s", e)
+            raise e
+
+    async def connect_and_run(self, audio_queue: asyncio.Queue):
+        """ Establishes connection and handles reconnect loops with exponential backoff """
+        connect_config = self.get_connect_config()
+        
+        initial_delay = 1.0
+        max_delay = 60.0
+        factor = 2.0
+        delay = initial_delay
+
+        while True:
+            try:
+                logger.info("Connecting to Gemini Live API...")
+                async with self.client.aio.live.connect(
+                    model=self.model_id, 
+                    config=connect_config
+                ) as session:
+                    self.session = session
+                    logger.info("Connected to Gemini Live successfully.")
+                    
+                    async def reset_delay_after_stable():
+                        try:
+                            await asyncio.sleep(5.0)
+                            nonlocal delay
+                            delay = initial_delay
+                            logger.info("Connection stable. Resetting backoff delay.")
+                        except asyncio.CancelledError:
+                            pass
+
+                    reset_task = asyncio.create_task(reset_delay_after_stable())
+                    
+                    # Start concurrent send and receive tasks
+                    send_task = asyncio.create_task(self.send_audio_loop(audio_queue))
+                    receive_task = asyncio.create_task(self.receive_translation_loop())
+                    
+                    # Wait for either task to fail/complete
+                    done, pending = await asyncio.wait(
+                        [send_task, receive_task],
+                        return_when=asyncio.FIRST_EXCEPTION
+                    )
+                    
+                    # Cancel the other pending tasks
+                    reset_task.cancel()
+                    for task in pending:
+                        task.cancel()
+                    
+                    # Propagate exceptions to trigger reconnection
+                    for task in done:
+                        try:
+                            task.result()
+                        except asyncio.CancelledError:
+                            pass
+            except Exception as e:
+                logger.error("Session disconnect or connection error: %s. Reconnecting in %.1fs...", e, delay)
+                self.latest_translation = "Reconnecting..."
+                await asyncio.sleep(delay)
+                delay = min(delay * factor, max_delay)
+            finally:
+                self.session = None
+
+    def get_transcription(self):
+        """ Returns the latest translation string """
+        return self.latest_translation
