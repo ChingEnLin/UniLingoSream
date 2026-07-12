@@ -24,7 +24,8 @@ class TranscriberTranslator:
                 "api": {
                     "model": "gemini-3.5-live-translate-preview",
                     "source_language": "ja-JP",
-                    "target_language": "zh-TW"
+                    "target_language": "zh-TW",
+                    "subtitle_timeout_seconds": 4.0
                 },
                 "audio": {
                     "device_name": "BlackHole 2ch",
@@ -44,10 +45,16 @@ class TranscriberTranslator:
             self.audio_config["sample_rate"] = kwargs["sample_rate"]
         if "audio_channel_count" in kwargs:
             self.audio_config["channels"] = kwargs["audio_channel_count"]
+        if "subtitle_timeout_seconds" in kwargs:
+            self.api_config["subtitle_timeout_seconds"] = kwargs["subtitle_timeout_seconds"]
 
         self.client = genai.Client()
         self.model_id = self.api_config.get("model", "gemini-3.5-live-translate-preview")
         self.latest_translation = ""
+        self.current_turn_translation = ""
+        self.is_new_turn = True
+        self.last_activity_time = 0.0
+        self.timeout_seconds = self.api_config.get("subtitle_timeout_seconds", 4.0)
         self.session = None
 
     def get_connect_config(self):
@@ -86,16 +93,43 @@ class TranscriberTranslator:
             async for response in self.session.receive():
                 if response.server_content:
                     content = response.server_content
+                    
+                    # 1. Handle incoming text transcription chunks
                     if content.output_transcription:
                         text = content.output_transcription.text
-                        if text and text.strip():
-                            self.latest_translation = text.strip()
+                        if text:
+                            if self.is_new_turn:
+                                self.current_turn_translation = ""
+                                self.is_new_turn = False
+                            
+                            self.current_turn_translation += text
+                            self.latest_translation = self.current_turn_translation.strip()
+                            self.last_activity_time = asyncio.get_event_loop().time()
                             logger.info("Translation: %s", self.latest_translation)
+                            
+                    # 2. Check if the turn is complete
+                    if content.turn_complete:
+                        logger.info("Turn complete.")
+                        self.is_new_turn = True
+                        self.last_activity_time = asyncio.get_event_loop().time()
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Error receiving from Live session: %s", e)
             raise e
+
+    async def clear_subtitle_timeout_loop(self):
+        """ Clears the subtitle overlay if no new translation activity occurs after a turn is complete """
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                if self.is_new_turn and self.latest_translation and self.last_activity_time:
+                    elapsed = asyncio.get_event_loop().time() - self.last_activity_time
+                    if elapsed > self.timeout_seconds:
+                        logger.info("Subtitle timeout reached. Clearing subtitle overlay.")
+                        self.latest_translation = ""
+        except asyncio.CancelledError:
+            pass
 
     async def connect_and_run(self, audio_queue: asyncio.Queue):
         """ Establishes connection and handles reconnect loops with exponential backoff """
@@ -127,13 +161,14 @@ class TranscriberTranslator:
 
                     reset_task = asyncio.create_task(reset_delay_after_stable())
                     
-                    # Start concurrent send and receive tasks
+                    # Start concurrent send, receive, and clear tasks
                     send_task = asyncio.create_task(self.send_audio_loop(audio_queue))
                     receive_task = asyncio.create_task(self.receive_translation_loop())
+                    clear_task = asyncio.create_task(self.clear_subtitle_timeout_loop())
                     
                     # Wait for either task to fail/complete
                     done, pending = await asyncio.wait(
-                        [send_task, receive_task],
+                        [send_task, receive_task, clear_task],
                         return_when=asyncio.FIRST_EXCEPTION
                     )
                     

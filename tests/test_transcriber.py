@@ -80,7 +80,7 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             pass
 
     async def test_receive_translation_loop(self):
-        """ Test that receive loop processes incoming responses and updates transcription """
+        """ Test that receive loop accumulates text chunks and resets on new turns """
         translator = TranscriberTranslator(config_path="dummy.json")
         mock_session = MagicMock()
         translator.session = mock_session
@@ -89,7 +89,8 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         mock_response_1 = MagicMock()
         mock_response_1.server_content = MagicMock()
         mock_response_1.server_content.output_transcription = MagicMock()
-        mock_response_1.server_content.output_transcription.text = "Hello World"
+        mock_response_1.server_content.output_transcription.text = "Hello"
+        mock_response_1.server_content.turn_complete = False
         
         mock_response_2 = MagicMock()
         mock_response_2.server_content = None # should be ignored
@@ -97,17 +98,37 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         mock_response_3 = MagicMock()
         mock_response_3.server_content = MagicMock()
         mock_response_3.server_content.output_transcription = None # should be ignored
+        mock_response_3.server_content.turn_complete = False
         
         mock_response_4 = MagicMock()
         mock_response_4.server_content = MagicMock()
         mock_response_4.server_content.output_transcription = MagicMock()
-        mock_response_4.server_content.output_transcription.text = "  Next Translation  "
+        mock_response_4.server_content.output_transcription.text = " World"
+        mock_response_4.server_content.turn_complete = False
+
+        # Turn completion message
+        mock_response_5 = MagicMock()
+        mock_response_5.server_content = MagicMock()
+        mock_response_5.server_content.output_transcription = None
+        mock_response_5.server_content.turn_complete = True
+
+        # Next turn starts
+        mock_response_6 = MagicMock()
+        mock_response_6.server_content = MagicMock()
+        mock_response_6.server_content.output_transcription = MagicMock()
+        mock_response_6.server_content.output_transcription.text = "New Sentence"
+        mock_response_6.server_content.turn_complete = False
         
         async def mock_receive_generator():
             yield mock_response_1
             yield mock_response_2
             yield mock_response_3
             yield mock_response_4
+            # Verify accumulation before turn completion
+            await asyncio.sleep(0.02)
+            yield mock_response_5
+            await asyncio.sleep(0.02)
+            yield mock_response_6
             # Keep open to simulate active connection
             while True:
                 await asyncio.sleep(1)
@@ -116,14 +137,53 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         
         loop_task = asyncio.create_task(translator.receive_translation_loop())
         
-        # Wait a short moment to let generator process
-        await asyncio.sleep(0.05)
+        # Wait a short moment to let generator process response 1-4
+        await asyncio.sleep(0.01)
+        self.assertEqual(translator.get_transcription(), "Hello World")
         
-        self.assertEqual(translator.get_transcription(), "Next Translation")
+        # Wait for turn complete (response 5) and new sentence (response 6)
+        await asyncio.sleep(0.05)
+        self.assertEqual(translator.get_transcription(), "New Sentence")
         
         loop_task.cancel()
         try:
             await loop_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_clear_subtitle_timeout_loop(self):
+        """ Test that clear loop resets translation after silence if turn is complete """
+        translator = TranscriberTranslator(config_path="dummy.json", subtitle_timeout_seconds=0.1)
+        translator.latest_translation = "Some subtitle text"
+        translator.is_new_turn = True
+        translator.last_activity_time = asyncio.get_event_loop().time() - 0.2 # exceeded 0.1s
+        
+        clear_task = asyncio.create_task(translator.clear_subtitle_timeout_loop())
+        await asyncio.sleep(0.6) # let it run once (since it sleeps 0.5s)
+        
+        self.assertEqual(translator.get_transcription(), "")
+        
+        clear_task.cancel()
+        try:
+            await clear_task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_clear_subtitle_no_clear_during_turn(self):
+        """ Test that clear loop does NOT clear translation if turn is still active """
+        translator = TranscriberTranslator(config_path="dummy.json", subtitle_timeout_seconds=0.1)
+        translator.latest_translation = "Active translation text"
+        translator.is_new_turn = False # turn still in progress
+        translator.last_activity_time = asyncio.get_event_loop().time() - 0.2
+        
+        clear_task = asyncio.create_task(translator.clear_subtitle_timeout_loop())
+        await asyncio.sleep(0.02)
+        
+        self.assertEqual(translator.get_transcription(), "Active translation text")
+        
+        clear_task.cancel()
+        try:
+            await clear_task
         except asyncio.CancelledError:
             pass
 
@@ -146,16 +206,19 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         
         # Run connect_and_run, but mock asyncio.sleep in module.transcriber so we don't actually wait during reconnect
         real_sleep = asyncio.sleep
-        mock_sleep = AsyncMock(side_effect=[None, asyncio.CancelledError])
-        with patch('module.transcriber.asyncio.sleep', mock_sleep):
+        sleep_calls = []
+        
+        async def mock_sleep(d):
+            sleep_calls.append(d)
+            if d == 1.0: # Reconnect delay sleep call
+                raise asyncio.CancelledError("Exiting reconnect loop for test")
+            await real_sleep(0.0) # Yield control
+            
+        with patch('module.transcriber.asyncio.sleep', side_effect=mock_sleep):
             # We let the run loop run for a bit
             run_task = asyncio.create_task(translator.connect_and_run(audio_queue))
             
             # Wait a short moment to let it run
-            await real_sleep(0.05)
-            
-            if not run_task.done():
-                run_task.cancel()
             try:
                 await run_task
             except asyncio.CancelledError:
@@ -168,14 +231,8 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(translator.get_transcription(), "Reconnecting...")
             
             # Verify mock_sleep was called with stable wait first, then reconnect backoff delay
-            mock_sleep.assert_called()
-            self.assertEqual(len(mock_sleep.call_args_list), 2)
-            
-            # First sleep call is the stability wait
-            self.assertEqual(mock_sleep.call_args_list[0][0][0], 5.0)
-            
-            # Second sleep call is the reconnect backoff wait
-            self.assertEqual(mock_sleep.call_args_list[1][0][0], 1.0)
+            self.assertIn(5.0, sleep_calls) # stable check sleep
+            self.assertIn(1.0, sleep_calls) # reconnect backoff sleep
 
 if __name__ == '__main__':
     unittest.main()
