@@ -319,5 +319,48 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             self.assertIn(5.0, sleep_calls) # stable check sleep
             self.assertIn(1.0, sleep_calls) # reconnect backoff sleep
 
+    async def test_token_usage_accumulation(self):
+        """ Test that token usage is accumulated and deltas are calculated correctly """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        mock_session = MagicMock()
+        translator.session = mock_session
+
+        # Mock metadata
+        mock_metadata_1 = MagicMock()
+        mock_metadata_1.prompt_token_count = 100
+        mock_metadata_1.candidates_token_count = 10
+
+        mock_metadata_2 = MagicMock()
+        mock_metadata_2.prompt_token_count = 150
+        mock_metadata_2.candidates_token_count = 25
+
+        mock_response_1 = MagicMock()
+        mock_response_1.server_content = None
+        mock_response_1.usage_metadata = mock_metadata_1
+
+        mock_response_2 = MagicMock()
+        mock_response_2.server_content = None
+        mock_response_2.usage_metadata = mock_metadata_2
+
+        async def mock_receive():
+            yield mock_response_1
+            yield mock_response_2
+            while True:
+                await asyncio.sleep(1)
+
+        mock_session.receive = MagicMock(return_value=mock_receive())
+        
+        loop_task = asyncio.create_task(translator.receive_translation_loop())
+        await asyncio.sleep(0.05)
+        
+        self.assertEqual(translator.accumulated_prompt_tokens, 150)
+        self.assertEqual(translator.accumulated_candidates_tokens, 25)
+        
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
 if __name__ == '__main__':
     unittest.main()

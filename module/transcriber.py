@@ -60,6 +60,10 @@ class TranscriberTranslator:
         self.timeout_seconds = self.api_config.get("subtitle_timeout_seconds", 4.0)
         self.pause_threshold = self.api_config.get("sentence_pause_seconds", 1.5)
         self.session = None
+        self.accumulated_prompt_tokens = 0
+        self.accumulated_candidates_tokens = 0
+        self.current_conn_prompt_tokens = 0
+        self.current_conn_candidates_tokens = 0
 
     def get_connect_config(self):
         """ Generates LiveConnectConfig for the Gemini session """
@@ -96,6 +100,34 @@ class TranscriberTranslator:
         try:
             sentence_enders = ("。", "？", "！", ".", "?", "!", "\n")
             async for response in self.session.receive():
+                # Track token usage and estimated cost
+                metadata = getattr(response, "usage_metadata", None)
+                if metadata:
+                    prompt_tokens = getattr(metadata, "prompt_token_count", 0)
+                    candidates_tokens = getattr(metadata, "candidates_token_count", 0)
+                    
+                    # Ensure they are integers to handle MagicMocks in unit tests
+                    if isinstance(prompt_tokens, int) and isinstance(candidates_tokens, int):
+                        # Compute deltas
+                        delta_prompt = max(0, prompt_tokens - self.current_conn_prompt_tokens)
+                        delta_candidates = max(0, candidates_tokens - self.current_conn_candidates_tokens)
+                        
+                        self.accumulated_prompt_tokens += delta_prompt
+                        self.accumulated_candidates_tokens += delta_candidates
+                        
+                        self.current_conn_prompt_tokens = prompt_tokens
+                        self.current_conn_candidates_tokens = candidates_tokens
+                        
+                        # Gemini 3.5 Live pricing: $3.50/1M input, $21.00/1M output
+                        estimated_cost = (self.accumulated_prompt_tokens * 0.0000035) + (self.accumulated_candidates_tokens * 0.000021)
+                        
+                        logger.info(
+                            "Session Accumulated - Prompt Tokens: %d, Candidates Tokens: %d, Estimated Cost: $%.6f",
+                            self.accumulated_prompt_tokens,
+                            self.accumulated_candidates_tokens,
+                            estimated_cost
+                        )
+
                 if response.server_content:
                     content = response.server_content
                     
@@ -209,6 +241,8 @@ class TranscriberTranslator:
                 delay = min(delay * factor, max_delay)
             finally:
                 self.session = None
+                self.current_conn_prompt_tokens = 0
+                self.current_conn_candidates_tokens = 0
 
     def get_transcription(self):
         """ Returns the latest translation string """
