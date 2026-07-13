@@ -47,7 +47,31 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         config = translator.get_connect_config()
         self.assertIsInstance(config, types.LiveConnectConfig)
         self.assertEqual(config.translation_config.target_language_code, "es-ES")
-        self.assertEqual(config.response_modalities, [types.Modality.AUDIO])
+        self.assertEqual(config.response_modalities, [types.Modality.TEXT])
+
+    def test_extract_text_from_model_turn(self):
+        """ TEXT modality: text arrives in model_turn parts """
+        content = MagicMock()
+        part1 = MagicMock()
+        part1.text = "Ni"
+        part2 = MagicMock()
+        part2.text = "Hao"
+        content.model_turn.parts = [part1, part2]
+        self.assertEqual(TranscriberTranslator._extract_text(content), "NiHao")
+
+    def test_extract_text_falls_back_to_output_transcription(self):
+        """ AUDIO modality fallback: text arrives via output_transcription """
+        content = MagicMock()
+        content.model_turn = None
+        content.output_transcription.text = "hello"
+        self.assertEqual(TranscriberTranslator._extract_text(content), "hello")
+
+    def test_extract_text_none(self):
+        """ No text in the message """
+        content = MagicMock()
+        content.model_turn = None
+        content.output_transcription = None
+        self.assertIsNone(TranscriberTranslator._extract_text(content))
 
     async def test_send_audio_loop(self):
         """ Test that audio loop pulls from the queue and sends through the session """
@@ -88,20 +112,23 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         # Mock responses from receive() async generator
         mock_response_1 = MagicMock()
         mock_response_1.server_content = MagicMock()
+        mock_response_1.server_content.model_turn = None
         mock_response_1.server_content.output_transcription = MagicMock()
         mock_response_1.server_content.output_transcription.text = "Hello"
         mock_response_1.server_content.turn_complete = False
-        
+
         mock_response_2 = MagicMock()
         mock_response_2.server_content = None # should be ignored
-        
+
         mock_response_3 = MagicMock()
         mock_response_3.server_content = MagicMock()
+        mock_response_3.server_content.model_turn = None
         mock_response_3.server_content.output_transcription = None # should be ignored
         mock_response_3.server_content.turn_complete = False
-        
+
         mock_response_4 = MagicMock()
         mock_response_4.server_content = MagicMock()
+        mock_response_4.server_content.model_turn = None
         mock_response_4.server_content.output_transcription = MagicMock()
         mock_response_4.server_content.output_transcription.text = " World"
         mock_response_4.server_content.turn_complete = False
@@ -109,12 +136,14 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         # Turn completion message
         mock_response_5 = MagicMock()
         mock_response_5.server_content = MagicMock()
+        mock_response_5.server_content.model_turn = None
         mock_response_5.server_content.output_transcription = None
         mock_response_5.server_content.turn_complete = True
 
         # Next turn starts
         mock_response_6 = MagicMock()
         mock_response_6.server_content = MagicMock()
+        mock_response_6.server_content.model_turn = None
         mock_response_6.server_content.output_transcription = MagicMock()
         mock_response_6.server_content.output_transcription.text = "New Sentence"
         mock_response_6.server_content.turn_complete = False
@@ -178,16 +207,18 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         
         mock_response_1 = MagicMock()
         mock_response_1.server_content = MagicMock()
+        mock_response_1.server_content.model_turn = None
         mock_response_1.server_content.output_transcription = MagicMock()
         mock_response_1.server_content.output_transcription.text = "Hello"
         mock_response_1.server_content.turn_complete = False
-        
+
         mock_response_2 = MagicMock()
         mock_response_2.server_content = MagicMock()
+        mock_response_2.server_content.model_turn = None
         mock_response_2.server_content.output_transcription = MagicMock()
         mock_response_2.server_content.output_transcription.text = "New Turn"
         mock_response_2.server_content.turn_complete = False
-        
+
         async def mock_receive_generator():
             yield mock_response_1
             # Wait longer than 0.1s to exceed pause_threshold
@@ -222,18 +253,21 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         
         mock_response_1 = MagicMock()
         mock_response_1.server_content = MagicMock()
+        mock_response_1.server_content.model_turn = None
         mock_response_1.server_content.output_transcription = MagicMock()
         mock_response_1.server_content.output_transcription.text = "你好。"
         mock_response_1.server_content.turn_complete = False
-        
+
         mock_response_2 = MagicMock()
         mock_response_2.server_content = MagicMock()
+        mock_response_2.server_content.model_turn = None
         mock_response_2.server_content.output_transcription = MagicMock()
         mock_response_2.server_content.output_transcription.text = "吃飽了嗎？"
         mock_response_2.server_content.turn_complete = False
 
         mock_response_3 = MagicMock()
         mock_response_3.server_content = MagicMock()
+        mock_response_3.server_content.model_turn = None
         mock_response_3.server_content.output_transcription = MagicMock()
         mock_response_3.server_content.output_transcription.text = "好的"
         mock_response_3.server_content.turn_complete = False

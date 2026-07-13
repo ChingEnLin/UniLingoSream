@@ -67,13 +67,25 @@ class TranscriberTranslator:
 
     def get_connect_config(self):
         """ Generates LiveConnectConfig for the Gemini session """
+        # TEXT modality: we never play the synthesized audio, so don't pay output-audio rates for it
         return types.LiveConnectConfig(
-            response_modalities=[types.Modality.AUDIO],
+            response_modalities=[types.Modality.TEXT],
             translation_config=types.TranslationConfig(
                 target_language_code=self.api_config.get("target_language", "zh-TW")
-            ),
-            output_audio_transcription=types.AudioTranscriptionConfig()
+            )
         )
+
+    @staticmethod
+    def _extract_text(content):
+        """ Pulls translated text from a server message.
+
+        TEXT modality delivers it via model_turn parts; AUDIO modality via output_transcription.
+        """
+        if content.model_turn and content.model_turn.parts:
+            return "".join(part.text for part in content.model_turn.parts if part.text)
+        if content.output_transcription:
+            return content.output_transcription.text
+        return None
 
     async def send_audio_loop(self, audio_queue: asyncio.Queue):
         """ Pulls audio chunks from the queue and streams to Gemini Live API """
@@ -131,32 +143,31 @@ class TranscriberTranslator:
                 if response.server_content:
                     content = response.server_content
                     
-                    # 1. Handle incoming text transcription chunks
-                    if content.output_transcription:
-                        text = content.output_transcription.text
-                        if text:
-                            current_time = asyncio.get_event_loop().time()
-                            
-                            # If there was a pause of more than sentence_pause_seconds, start a new turn
-                            if self.last_activity_time > 0:
-                                pause_duration = current_time - self.last_activity_time
-                                if pause_duration > self.pause_threshold:
-                                    self.is_new_turn = True
-                            
-                            if self.is_new_turn:
-                                self.current_turn_translation = ""
-                                self.is_new_turn = False
-                            
-                            self.current_turn_translation += text
-                            self.latest_translation = self.current_turn_translation.strip()
-                            self.last_activity_time = current_time
-                            logger.info("Translation: %s", self.latest_translation)
-                            
-                            # Instant split: if the sentence ends with punctuation, mark next turn as new
-                            if self.latest_translation.endswith(sentence_enders):
-                                logger.info("Sentence boundary punctuation detected. Setting is_new_turn=True.")
+                    # 1. Handle incoming translated text chunks
+                    text = self._extract_text(content)
+                    if text:
+                        current_time = asyncio.get_event_loop().time()
+
+                        # If there was a pause of more than sentence_pause_seconds, start a new turn
+                        if self.last_activity_time > 0:
+                            pause_duration = current_time - self.last_activity_time
+                            if pause_duration > self.pause_threshold:
                                 self.is_new_turn = True
-                            
+
+                        if self.is_new_turn:
+                            self.current_turn_translation = ""
+                            self.is_new_turn = False
+
+                        self.current_turn_translation += text
+                        self.latest_translation = self.current_turn_translation.strip()
+                        self.last_activity_time = current_time
+                        logger.info("Translation: %s", self.latest_translation)
+
+                        # Instant split: if the sentence ends with punctuation, mark next turn as new
+                        if self.latest_translation.endswith(sentence_enders):
+                            logger.info("Sentence boundary punctuation detected. Setting is_new_turn=True.")
+                            self.is_new_turn = True
+
                     # 2. Check if the turn is complete
                     if content.turn_complete:
                         logger.info("Turn complete.")
