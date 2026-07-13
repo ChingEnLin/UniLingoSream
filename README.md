@@ -11,7 +11,7 @@ UniLingoStream is a real-time translation tool designed to break down language b
 
 ## Prerequisites
 
-- Python 3.8 to 3.10
+- Python 3.9 to 3.12
 - Gemini API Key (obtained from Google AI Studio)
 - macOS (requires BlackHole installed for capturing system audio) or Linux with PortAudio
 
