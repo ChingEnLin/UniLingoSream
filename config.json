@@ -1,7 +1,6 @@
 {
   "api": {
     "model": "gemini-3.5-live-translate-preview",
-    "source_language": "ja-JP",
     "target_language": "zh-TW",
     "subtitle_timeout_seconds": 4.0,
     "sentence_pause_seconds": 1.5

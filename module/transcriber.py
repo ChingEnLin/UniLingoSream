@@ -23,7 +23,6 @@ class TranscriberTranslator:
             self.full_config = {
                 "api": {
                     "model": "gemini-3.5-live-translate-preview",
-                    "source_language": "ja-JP",
                     "target_language": "zh-TW",
                     "subtitle_timeout_seconds": 4.0,
                     "sentence_pause_seconds": 1.5
@@ -40,8 +39,6 @@ class TranscriberTranslator:
         # Override with kwargs if provided for backward compatibility
         if "target_language" in kwargs:
             self.api_config["target_language"] = kwargs["target_language"]
-        if "source_language" in kwargs:
-            self.api_config["source_language"] = kwargs["source_language"]
         if "sample_rate" in kwargs:
             self.audio_config["sample_rate"] = kwargs["sample_rate"]
         if "audio_channel_count" in kwargs:
