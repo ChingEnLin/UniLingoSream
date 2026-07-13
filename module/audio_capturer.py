@@ -2,6 +2,7 @@ import logging
 import sounddevice as sd
 import json
 import asyncio
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -10,12 +11,14 @@ class AudioCapturer:
     and pushes it thread-safely to an asyncio queue.
     """
     BLOCK_DURATION_SEC = 0.1
+    HANGOVER_SEC = 1.0
 
     def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None):
         DEFAULT_CONFIG = {
             "device_name": "BlackHole 2ch",
             "sample_rate": 16000,
-            "channels": 1
+            "channels": 1,
+            "silence_rms_threshold": 300
         }
         if config is None:
             try:
@@ -34,6 +37,11 @@ class AudioCapturer:
 
         # Stream in ~100ms chunks (1600 samples @ 16kHz)
         self.blocksize = int(self.sample_rate * self.BLOCK_DURATION_SEC)
+
+        # ponytail: RMS silence gate; threshold is a calibration knob in config.json (int16 units)
+        self.silence_rms_threshold = config.get("silence_rms_threshold", DEFAULT_CONFIG["silence_rms_threshold"])
+        self._hangover_blocks = int(self.HANGOVER_SEC / self.BLOCK_DURATION_SEC)
+        self._silent_block_count = self._hangover_blocks  # start gated until first speech
 
         # Find device index by name
         self.device_index = self._find_device_index(self.device_name)
@@ -68,9 +76,19 @@ class AudioCapturer:
             logger.warning("Audio queue is full, dropping frame.")
 
     def audio_callback(self, indata, frames, time, status):
-        """Callback function called by sounddevice for each block of input audio."""
+        """Callback function called by sounddevice for each block of input audio.
+
+        Drops sustained silence so it is not streamed (and billed) to Gemini.
+        """
         if status:
             logger.warning("Audio status warning: %s", status)
+        rms = np.sqrt(np.mean(indata.astype(np.float64) ** 2))
+        if rms < self.silence_rms_threshold:
+            self._silent_block_count += 1
+            if self._silent_block_count > self._hangover_blocks:
+                return
+        else:
+            self._silent_block_count = 0
         # Convert captured numpy array to raw bytes
         raw_bytes = indata.tobytes()
         # Thread-safely push raw bytes to the asyncio queue

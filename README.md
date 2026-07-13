@@ -72,8 +72,7 @@ You can customize the application behavior by modifying config.json. The support
 ## Project Structure
 
 - main.py: Main entry point. Wires the capturer, transcriber, and display modules, spawning a background thread to poll translations.
-- module/audio_capturer.py: Captures real-time audio chunking from the configured audio input device and routes it to an async queue.
-- module/audio_processer.py: Performs energy-based Voice Activity Detection (VAD) to filter silence before sending audio.
+- module/audio_capturer.py: Captures real-time audio from the configured input device, drops sustained silence (RMS gate), and routes speech chunks to an async queue.
 - module/transcriber.py: Manages the WebSocket connection to the Gemini Live API, feeds incoming audio, decodes translated text, and logs cumulative token/cost statistics.
 - module/display.py: Renders the Tkinter subtitle overlay window, manages transparency, and dragging logic.
 - module/utility/log.py: Configures custom logging formatters and handlers.

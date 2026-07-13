@@ -92,18 +92,44 @@ class TestAudioCapturer(unittest.TestCase):
 
     def test_audio_callback(self):
         """ Test audio callback thread-safe queue pushing """
-        indata = np.array([[10], [20], [30]], dtype=np.int16)
-        frames = 3
+        # Loud block clears the silence gate so it is streamed
+        indata = np.full((1600, 1), 1000, dtype=np.int16)
+        frames = 1600
         time = MagicMock()
         status = None
-        
+
         self.audio_capturer.audio_callback(indata, frames, time, status)
-        
+
         # Check that loop.call_soon_threadsafe is called with self.audio_capturer._safe_put and raw bytes
         self.loop.call_soon_threadsafe.assert_called_once_with(
             self.audio_capturer._safe_put,
             indata.tobytes()
         )
+
+    def test_callback_drops_silence_before_speech(self):
+        """ Silence before any speech must not be streamed """
+        silent = np.zeros((1600, 1), dtype=np.int16)
+        self.audio_capturer.audio_callback(silent, 1600, None, None)
+        self.loop.call_soon_threadsafe.assert_not_called()
+
+    def test_callback_streams_speech_and_hangover(self):
+        """ Speech streams; trailing silence streams for the hangover window then stops """
+        loud = np.full((1600, 1), 1000, dtype=np.int16)
+        silent = np.zeros((1600, 1), dtype=np.int16)
+
+        self.audio_capturer.audio_callback(loud, 1600, None, None)
+        self.assertEqual(self.loop.call_soon_threadsafe.call_count, 1)
+
+        # Silence within the hangover window still streams (protects word tails)
+        self.audio_capturer.audio_callback(silent, 1600, None, None)
+        self.assertEqual(self.loop.call_soon_threadsafe.call_count, 2)
+
+        # Exhaust the hangover; further silence is dropped
+        for _ in range(self.audio_capturer._hangover_blocks):
+            self.audio_capturer.audio_callback(silent, 1600, None, None)
+        count_after_hangover = self.loop.call_soon_threadsafe.call_count
+        self.audio_capturer.audio_callback(silent, 1600, None, None)
+        self.assertEqual(self.loop.call_soon_threadsafe.call_count, count_after_hangover)
 
     def test_safe_put_success(self):
         """ Test _safe_put successfully puts data in the queue """

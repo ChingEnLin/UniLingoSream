@@ -9,7 +9,8 @@
   "audio": {
     "device_name": "BlackHole 2ch",
     "sample_rate": 16000,
-    "channels": 1
+    "channels": 1,
+    "silence_rms_threshold": 300
   },
   "ui": {
     "font_family": "Helvetica",
