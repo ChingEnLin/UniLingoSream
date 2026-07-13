@@ -212,7 +212,8 @@ class TranscriberTranslator:
                 ) as session:
                     self.session = session
                     logger.info("Connected to Gemini Live successfully.")
-                    
+                    self.latest_translation = "Listening..."
+
                     async def reset_delay_after_stable():
                         try:
                             await asyncio.sleep(5.0)
@@ -248,7 +249,7 @@ class TranscriberTranslator:
                             pass
             except Exception as e:
                 logger.error("Session disconnect or connection error: %s. Reconnecting in %.1fs...", e, delay)
-                self.latest_translation = "Reconnecting..."
+                self.latest_translation = f"Reconnecting ({type(e).__name__})..."
                 await asyncio.sleep(delay)
                 delay = min(delay * factor, max_delay)
             finally:

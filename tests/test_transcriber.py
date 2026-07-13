@@ -346,8 +346,8 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             # Verify we attempted to connect to Gemini Live
             translator.client.aio.live.connect.assert_called()
             
-            # Verify we updated the status to Reconnecting...
-            self.assertEqual(translator.get_transcription(), "Reconnecting...")
+            # Verify we updated the status to Reconnecting... with the exception class
+            self.assertEqual(translator.get_transcription(), "Reconnecting (ConnectionResetError)...")
             
             # Verify mock_sleep was called with stable wait first, then reconnect backoff delay
             self.assertIn(5.0, sleep_calls) # stable check sleep
@@ -411,6 +411,18 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
                 await translator.connect_and_run(queue)
 
         self.assertTrue(queue.empty())
+
+    async def test_connection_error_shows_exception_on_overlay(self):
+        """ Connection failures must surface the exception class, not a bare Reconnecting """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        translator.client.aio.live.connect = MagicMock(side_effect=ValueError("bad key"))
+
+        with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await translator.connect_and_run(asyncio.Queue())
+
+        self.assertIn("Reconnecting", translator.latest_translation)
+        self.assertIn("ValueError", translator.latest_translation)
 
 if __name__ == '__main__':
     unittest.main()
