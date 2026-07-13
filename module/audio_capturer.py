@@ -13,7 +13,7 @@ class AudioCapturer:
     BLOCK_DURATION_SEC = 0.1
     HANGOVER_SEC = 1.0
 
-    def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None):
+    def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None, device_name=None):
         DEFAULT_CONFIG = {
             "device_name": "BlackHole 2ch",
             "sample_rate": 16000,
@@ -33,7 +33,7 @@ class AudioCapturer:
         self.audio_queue = audio_queue
         self.sample_rate = config.get("sample_rate", DEFAULT_CONFIG["sample_rate"])
         self.channels = config.get("channels", DEFAULT_CONFIG["channels"])
-        self.device_name = config.get("device_name", DEFAULT_CONFIG["device_name"])
+        self.device_name = device_name or config.get("device_name", DEFAULT_CONFIG["device_name"])
 
         # Stream in ~100ms chunks (1600 samples @ 16kHz)
         self.blocksize = int(self.sample_rate * self.BLOCK_DURATION_SEC)

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import asyncio
 
-from main import run_async_loop, poll_transcription, POLL_INTERVAL_MS
+from main import run_async_loop, poll_transcription, POLL_INTERVAL_MS, parse_args
 
 class TestMain(unittest.TestCase):
     """ Test cases for main.py integration """
@@ -162,6 +162,20 @@ class TestMain(unittest.TestCase):
                 runpy.run_path("main.py", run_name="__main__")
             self.assertEqual(cm.exception.code, 1)
             mock_log_err.assert_called_once()
+
+    def test_parse_args_defaults(self):
+        """ No flags: no overrides """
+        args = parse_args([])
+        self.assertIsNone(args.target)
+        self.assertIsNone(args.device)
+        self.assertFalse(args.list_devices)
+
+    def test_parse_args_overrides(self):
+        """ Flags parse into overrides; unknown args are ignored (pytest compatibility) """
+        args = parse_args(["--target", "en-US", "--device", "Loopback", "--list-devices", "ignored-positional"])
+        self.assertEqual(args.target, "en-US")
+        self.assertEqual(args.device, "Loopback")
+        self.assertTrue(args.list_devices)
 
 if __name__ == '__main__':
     unittest.main()

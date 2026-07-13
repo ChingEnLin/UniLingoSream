@@ -165,5 +165,12 @@ class TestAudioCapturer(unittest.TestCase):
         self.audio_capturer.stop_stream()
         self.audio_capturer.stream.stop.assert_called_once()
 
+    def test_device_name_kwarg_overrides_config(self):
+        """ An explicit device_name beats the config file value """
+        with patch('builtins.open', mock_open(read_data=self.mock_config)):
+            capturer = AudioCapturer(self.loop, self.audio_queue, device_name="Built-in Microphone")
+        self.assertEqual(capturer.device_name, "Built-in Microphone")
+        self.assertEqual(capturer.device_index, 0)
+
 if __name__ == '__main__':
     unittest.main()

@@ -7,6 +7,7 @@ the Tkinter GUI subtitle display.
 
 import os
 import sys
+import argparse
 import asyncio
 import threading
 from dotenv import load_dotenv
@@ -67,19 +68,38 @@ def poll_transcription(display, transcriber, last_rendered=""):
     display.root.after(POLL_INTERVAL_MS, poll_transcription, display, transcriber, text)
 
 
+def parse_args(argv=None):
+    """Parses CLI overrides. Unknown args are ignored so test runners' argv doesn't break."""
+    parser = argparse.ArgumentParser(description="Real-time translation subtitle overlay")
+    parser.add_argument("--target", help="Target language code override, e.g. en-US")
+    parser.add_argument("--device", help="Audio input device name substring override")
+    parser.add_argument("--list-devices", action="store_true", help="Print audio devices and exit")
+    args, _ = parser.parse_known_args(argv)
+    return args
+
+
 if __name__ == "__main__":
+    args = parse_args()
+    if args.list_devices:
+        import sounddevice as sd
+        print(sd.query_devices())
+        sys.exit(0)
+
     if not os.getenv("GEMINI_API_KEY"):
         logger.error("GEMINI_API_KEY not found in env variables or .env file! Please set it.")
         sys.exit(1)
-        
+
     # Setup asyncio queue and loop
     async_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(async_loop)
     audio_queue = asyncio.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
-    
+
     # Initialize modules
-    transcriber_translator = TranscriberTranslator()
-    audio_capturer = AudioCapturer(async_loop, audio_queue)
+    overrides = {}
+    if args.target:
+        overrides["target_language"] = args.target
+    transcriber_translator = TranscriberTranslator(**overrides)
+    audio_capturer = AudioCapturer(async_loop, audio_queue, device_name=args.device)
     display_translation = DisplayTranslation()
 
     # Surface silent fallback: default input is the microphone, not system audio
