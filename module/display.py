@@ -84,6 +84,18 @@ class DisplayTranslation:
 
         self._drag_data = {"x": 0, "y": 0}
 
+        # Quit controls: borderless windows have no close button
+        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="Quit", command=self.root.destroy)
+        self.root.bind("<Escape>", lambda event: self.root.destroy())
+        for widget in (self.root, self.label):
+            widget.bind("<Button-2>", self.show_menu)  # macOS aqua right-click
+            widget.bind("<Button-3>", self.show_menu)
+
+    def show_menu(self, event):
+        """ Shows the right-click context menu at the pointer. """
+        self.menu.tk_popup(event.x_root, event.y_root)
+
     def start_drag(self, event):
         """ Start dragging the window. """
         self._drag_data["x"] = event.x

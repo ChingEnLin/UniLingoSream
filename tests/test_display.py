@@ -19,10 +19,17 @@ class TestDisplayTranslation(unittest.TestCase):
         self.mock_label_instance = MagicMock()
         self.mock_label_class.return_value = self.mock_label_instance
 
+        # Patch tkinter.Menu so it doesn't try to instantiate a real UI component
+        self.menu_patcher = patch('module.display.tk.Menu')
+        self.mock_menu_class = self.menu_patcher.start()
+        self.mock_menu_instance = MagicMock()
+        self.mock_menu_class.return_value = self.mock_menu_instance
+
         self.display = DisplayTranslation(root=self.mock_root, config={})
 
     def tearDown(self):
         self.label_patcher.stop()
+        self.menu_patcher.stop()
 
     def test_update_label(self):
         """ Test updating the label with a new translation """
@@ -102,6 +109,24 @@ class TestDisplayTranslation(unittest.TestCase):
         self.mock_root.bind.assert_any_call("<B1-Motion>", self.display.drag)
         self.mock_label_instance.bind.assert_any_call("<Button-1>", self.display.start_drag)
         self.mock_label_instance.bind.assert_any_call("<B1-Motion>", self.display.drag)
+
+    def test_quit_bindings(self):
+        """ Escape and right-click must be bound so the borderless window can be closed """
+        root_bindings = [c.args[0] for c in self.mock_root.bind.call_args_list]
+        self.assertIn("<Escape>", root_bindings)
+        self.assertIn("<Button-2>", root_bindings)
+        self.assertIn("<Button-3>", root_bindings)
+        self.mock_menu_instance.add_command.assert_called_once_with(
+            label="Quit", command=self.mock_root.destroy
+        )
+
+    def test_show_menu(self):
+        """ Right-click pops the context menu at the pointer """
+        event = MagicMock()
+        event.x_root = 100
+        event.y_root = 200
+        self.display.show_menu(event)
+        self.mock_menu_instance.tk_popup.assert_called_once_with(100, 200)
 
 
 if __name__ == '__main__':
