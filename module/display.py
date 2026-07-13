@@ -99,6 +99,89 @@ class DisplayTranslation:
         """ Updates the label with the new translation. """
         self.label.config(text=text)
 
+    def enable_fullscreen_overlay(self):
+        """Enable the window to float over full screen apps on macOS."""
+        import platform
+        if platform.system() != "Darwin":
+            return
+            
+        # Skip if running inside unit tests with a mock root
+        if hasattr(self.root, "__class__") and self.root.__class__.__name__ == "MagicMock":
+            return
+            
+        try:
+            self.root.update()
+            
+            import ctypes
+            import ctypes.util
+            
+            lib_path = ctypes.util.find_library('objc')
+            if not lib_path:
+                logger.warning("Could not find objc library path.")
+                return
+                
+            objc = ctypes.cdll.LoadLibrary(lib_path)
+            
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.objc_getClass.restype = ctypes.c_void_p
+            
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            
+            OBJC_MSG_SEND = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+            OBJC_MSG_SEND_IDX = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulonglong)
+            OBJC_MSG_SEND_STR = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p)
+            OBJC_MSG_SEND_VOID_ULONG = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulonglong)
+            
+            send_std = OBJC_MSG_SEND(objc.objc_msgSend)
+            send_idx = OBJC_MSG_SEND_IDX(objc.objc_msgSend)
+            send_str = OBJC_MSG_SEND_STR(objc.objc_msgSend)
+            send_void_ulong = OBJC_MSG_SEND_VOID_ULONG(objc.objc_msgSend)
+            
+            sel_sharedApplication = objc.sel_registerName(b"sharedApplication")
+            sel_windows = objc.sel_registerName(b"windows")
+            sel_count = objc.sel_registerName(b"count")
+            sel_objectAtIndex = objc.sel_registerName(b"objectAtIndex:")
+            sel_title = objc.sel_registerName(b"title")
+            sel_UTF8String = objc.sel_registerName(b"UTF8String")
+            sel_setCollectionBehavior = objc.sel_registerName(b"setCollectionBehavior:")
+            
+            nsapp_class = objc.objc_getClass(b"NSApplication")
+            if not nsapp_class:
+                return
+                
+            nsapp = send_std(nsapp_class, sel_sharedApplication)
+            if not nsapp:
+                return
+                
+            windows = send_std(nsapp, sel_windows)
+            if not windows:
+                return
+                
+            count = send_std(windows, sel_count)
+            target_window = None
+            for i in range(count):
+                win = send_idx(windows, sel_objectAtIndex, i)
+                title_nsstring = send_std(win, sel_title)
+                if title_nsstring:
+                    title_bytes = send_str(title_nsstring, sel_UTF8String)
+                    title = title_bytes.decode('utf-8') if title_bytes else ""
+                    if "UniLingoStream Subtitles" in title:
+                        target_window = win
+                        break
+            
+            if target_window:
+                # NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0 (1)
+                # NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 6 (64)
+                send_void_ulong(target_window, sel_setCollectionBehavior, 65)
+                logger.info("Successfully enabled macOS full screen support for overlay window.")
+            else:
+                logger.warning("Could not find UniLingoStream Subtitles window in NSApplication windows.")
+                
+        except Exception as e:
+            logger.warning("Failed to enable macOS full screen support: %s", e)
+
     def start_gui(self):
         """ Starts the Tkinter GUI loop. """
+        self.enable_fullscreen_overlay()
         self.root.mainloop()
