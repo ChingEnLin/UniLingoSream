@@ -24,6 +24,9 @@ load_dotenv()
 # Named constant for polling interval
 POLL_INTERVAL_MS = 50
 
+# Bound the capture queue: ~5s of 100ms chunks. AudioCapturer drops frames when full.
+AUDIO_QUEUE_MAXSIZE = 50
+
 
 def run_async_loop(loop, queue, transcriber, capturer):
     """Runs the asyncio event loop to capture audio and handle transcriber stream.
@@ -72,7 +75,7 @@ if __name__ == "__main__":
     # Setup asyncio queue and loop
     async_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(async_loop)
-    audio_queue = asyncio.Queue()
+    audio_queue = asyncio.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
     
     # Initialize modules
     transcriber_translator = TranscriberTranslator()

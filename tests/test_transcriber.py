@@ -362,5 +362,21 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def test_connect_and_run_drains_stale_queue(self):
+        """ Audio buffered while disconnected must be dropped, not streamed on reconnect """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        queue = asyncio.Queue()
+        for _ in range(3):
+            queue.put_nowait(b'stale')
+
+        # First connect attempt raises; patched sleep aborts the retry loop.
+        translator.client.aio.live.connect = MagicMock(side_effect=RuntimeError("boom"))
+
+        with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await translator.connect_and_run(queue)
+
+        self.assertTrue(queue.empty())
+
 if __name__ == '__main__':
     unittest.main()

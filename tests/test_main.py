@@ -117,6 +117,9 @@ class TestMain(unittest.TestCase):
         # Verify Tkinter GUI is started
         mock_display_class.return_value.start_gui.assert_called_once()
 
+        from main import AUDIO_QUEUE_MAXSIZE
+        mock_queue_class.assert_called_once_with(maxsize=AUDIO_QUEUE_MAXSIZE)
+
     @patch('module.transcriber.TranscriberTranslator')
     @patch('module.audio_capturer.AudioCapturer')
     @patch('module.display.DisplayTranslation')

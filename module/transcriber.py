@@ -192,6 +192,10 @@ class TranscriberTranslator:
         delay = initial_delay
 
         while True:
+            # Drop audio buffered while disconnected; translating it would show stale subtitles
+            while not audio_queue.empty():
+                audio_queue.get_nowait()
+                audio_queue.task_done()
             try:
                 logger.info("Connecting to Gemini Live API...")
                 async with self.client.aio.live.connect(
