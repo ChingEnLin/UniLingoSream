@@ -1,98 +1,96 @@
 # UniLingoStream
 
-UniLingoStream is a real-time translation tool designed to break down language barriers while watching video streams on your computer. It captures audio output from your system, transcribes the spoken language, translates it using AI, and displays the translated text on your screen.
+UniLingoStream is a real-time translation tool designed to break down language barriers while watching video streams or playing games on your computer. It captures system audio output, streams it to the Gemini Live API, and displays the translated subtitles in a floating, borderless Tkinter window.
 
 ## Features
 
-- Real-time audio capture from your system
-- Transcription of spoken language using Google Cloud Speech-to-Text API
-- Translation of transcribed text using Google Cloud Translation API
-- On-screen display of translated text
+- Real-time system audio capture using PortAudio
+- Real-time speech transcription and translation using the Gemini Live API (google-genai SDK)
+- Custom floating borderless translation overlay
+- Session-accumulated token usage and cost logging
+- Native macOS fullscreen mode support (overlay floats over full-screen spaces and apps)
 
 ## Prerequisites
 
-- Python 3.7 or higher
-- Google Cloud account with Speech-to-Text and Translation APIs enabled
-- macOS with BlackHole installed for audio capture
+- Python 3.8 to 3.10
+- Gemini API Key (obtained from Google AI Studio)
+- macOS (requires BlackHole installed for capturing system audio) or Linux with PortAudio
 
 ## Setup
 
 ### 1. Install Dependencies
 
-First, ensure you have `pip` installed, then install the required Python packages:
+First, ensure you have the package dependencies installed:
 
 ```bash
 pip install -r requirements.txt
+pip install -r requirements_dev.txt
 ```
 
-### 2. Google Cloud Setup
+### 2. Configure Environment Variables
 
-#### a. Enable APIs
+Create a `.env` file in the root directory and add your Gemini API Key:
 
-- Go to the [Google Cloud Console](https://console.cloud.google.com/).
-- Enable the "Speech-to-Text API" and "Cloud Translation API".
-
-#### b. Create Service Account
-
-- Navigate to the IAM & Admin > Service accounts page.
-- Click "Create Service Account".
-- Follow the prompts to create a new service account and download the JSON key file.
-
-### 3. Computer Sound Input And Output Configuration
-
-To ensure that UniLingoStream captures the audio output of your computer correctly, you need to configure your system's audio settings. Follow these steps:
-
-### macOS Configuration
-
-1. **Install BlackHole**
-
-   If you haven't installed BlackHole yet, follow the [BlackHole installation guide](https://github.com/ExistentialAudio/BlackHole#installation).
-
-2. **Set Up Audio MIDI Setup**
-
-   - Open `Audio MIDI Setup` from the `Applications > Utilities` folder.
-   - Click the `+` button in the bottom left corner and select `Create Multi-Output Device`.
-   - In the Multi-Output Device, check the boxes for your primary audio output (e.g., built-in speakers or external headphones) and `BlackHole 16ch`.
-
-3. **Configure Sound Settings**
-
-   - Open `System Preferences` and go to `Sound`.
-   - In the `Output` tab, select the Multi-Output Device you just created.
-   - In the `Input` tab, select `BlackHole 16ch` as the input device.
-
-### 4. Clone the Repository
-
-```bash
-git clone https://github.com/ChingEnLin/UniLingoSream
-cd UniLingoSream
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
+
+### 3. macOS Audio Routing Configuration
+
+To route system audio so that UniLingoStream can capture it:
+
+1. Install BlackHole:
+   ```bash
+   brew install blackhole-2ch
+   ```
+2. Open Audio MIDI Setup (under Applications > Utilities).
+3. Click the + button in the bottom left and select Create Multi-Output Device.
+4. In the Multi-Output Device configuration, select both your primary output device (e.g., Headphones or Built-in Speakers) and BlackHole 2ch.
+5. Open macOS System Settings -> Sound.
+6. Set your Output device to the newly created Multi-Output Device.
+7. Set your Input device to BlackHole 2ch.
 
 ## Usage
 
-### Running the Application
-
-Ensure your system's audio output is routed through BlackHole, then run the main application:
+Run the main application:
 
 ```bash
 python main.py
 ```
 
-The application will start capturing audio, transcribing, translating, and displaying the translated text on your screen.
+The application will start capturing system audio, streaming it to the Gemini Live API, and showing the translation in a transparent overlay window.
+
+### Configuration
+
+You can customize the application behavior by modifying config.json. The supported parameters are:
+
+- api: Configures the Gemini model, source/target languages, and phrase splitting settings.
+- audio: Configures the virtual device name, sample rate, and channels.
+- ui: Configures font family, font size, colors, window coordinates, opacity, and window level attributes.
 
 ## Project Structure
 
-- `audio_capturer.py`: Handles real-time audio capturing.
-- `transcriber.py`: Manages transcription and translation of audio.
-- `display.py`: Manages the display of translated text using Tkinter.
-- `main.py`: Main script to initialize and run the application.
+- main.py: Main entry point. Wires the capturer, transcriber, and display modules, spawning a background thread to poll translations.
+- module/audio_capturer.py: Captures real-time audio chunking from the configured audio input device and routes it to an async queue.
+- module/audio_processer.py: Performs energy-based Voice Activity Detection (VAD) to filter silence before sending audio.
+- module/transcriber.py: Manages the WebSocket connection to the Gemini Live API, feeds incoming audio, decodes translated text, and logs cumulative token/cost statistics.
+- module/display.py: Renders the Tkinter subtitle overlay window, manages transparency, dragging logic, and configures native macOS fullscreen spaces support.
+- module/utility/log.py: Configures custom logging formatters and handlers.
 
-## Contributing
+## Development and Testing
 
-Contributions are welcome! Please submit a pull request or open an issue to discuss improvements or bug fixes.
+To run tests:
+
+```bash
+pytest
+```
+
+To run the linter:
+
+```bash
+flake8 .
+```
 
 ## License
 
 This project is licensed under the MIT License.
-```
-
-This `README.md` file provides detailed instructions on setting up, running, and understanding the project. It also outlines the structure of the project and provides an overview of the main components. This should help new users get started with your project and understand its functionality.
