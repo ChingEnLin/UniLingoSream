@@ -42,7 +42,7 @@ class TestMain(unittest.TestCase):
         mock_loop.close.assert_called_once()
 
     def test_poll_transcription_with_text(self):
-        """ Test poll_transcription updates label when transcription is available """
+        """ Test poll_transcription updates label when transcription changed """
         mock_display = MagicMock()
         mock_transcriber = MagicMock()
         mock_transcriber.get_transcription.return_value = "Hello"
@@ -51,11 +51,11 @@ class TestMain(unittest.TestCase):
 
         mock_display.update_label.assert_called_once_with("Hello")
         mock_display.root.after.assert_called_once_with(
-            POLL_INTERVAL_MS, poll_transcription, mock_display, mock_transcriber
+            POLL_INTERVAL_MS, poll_transcription, mock_display, mock_transcriber, "Hello"
         )
 
     def test_poll_transcription_no_text(self):
-        """ Test poll_transcription does not update label when no transcription is available """
+        """ Test poll_transcription does not re-render when nothing changed """
         mock_display = MagicMock()
         mock_transcriber = MagicMock()
         mock_transcriber.get_transcription.return_value = ""
@@ -64,8 +64,28 @@ class TestMain(unittest.TestCase):
 
         mock_display.update_label.assert_not_called()
         mock_display.root.after.assert_called_once_with(
-            POLL_INTERVAL_MS, poll_transcription, mock_display, mock_transcriber
+            POLL_INTERVAL_MS, poll_transcription, mock_display, mock_transcriber, ""
         )
+
+    def test_poll_transcription_clears_label(self):
+        """ Timeout-cleared translation ("") must reach the screen """
+        mock_display = MagicMock()
+        mock_transcriber = MagicMock()
+        mock_transcriber.get_transcription.return_value = ""
+
+        poll_transcription(mock_display, mock_transcriber, last_rendered="Hello")
+
+        mock_display.update_label.assert_called_once_with("")
+
+    def test_poll_transcription_skips_identical_text(self):
+        """ Unchanged text must not be re-rendered every 50ms """
+        mock_display = MagicMock()
+        mock_transcriber = MagicMock()
+        mock_transcriber.get_transcription.return_value = "Hello"
+
+        poll_transcription(mock_display, mock_transcriber, last_rendered="Hello")
+
+        mock_display.update_label.assert_not_called()
 
     @patch('module.transcriber.TranscriberTranslator')
     @patch('module.audio_capturer.AudioCapturer')

@@ -49,18 +49,19 @@ def run_async_loop(loop, queue, transcriber, capturer):
         loop.close()
 
 
-def poll_transcription(display, transcriber):
+def poll_transcription(display, transcriber, last_rendered=""):
     """Polls the transcriber buffer and updates the translation overlay.
 
     Args:
         display: The DisplayTranslation module instance.
         transcriber: The TranscriberTranslator module instance.
+        last_rendered: The text currently shown on the overlay.
     """
     text = transcriber.get_transcription()
-    if text:
+    if text != last_rendered:
         display.update_label(text)
     # Poll again in POLL_INTERVAL_MS
-    display.root.after(POLL_INTERVAL_MS, poll_transcription, display, transcriber)
+    display.root.after(POLL_INTERVAL_MS, poll_transcription, display, transcriber, text)
 
 
 if __name__ == "__main__":
