@@ -27,6 +27,13 @@ class TestDisplayTranslation(unittest.TestCase):
 
         self.display = DisplayTranslation(root=self.mock_root, config={})
 
+        self.mock_root.winfo_height.return_value = 90
+        self.mock_root.winfo_width.return_value = 1536
+        self.mock_root.winfo_x.return_value = 192
+        self.mock_root.winfo_y.return_value = 890
+        self.mock_label_instance.winfo_reqheight.return_value = 70
+        self.mock_root.geometry.reset_mock()
+
     def tearDown(self):
         self.label_patcher.stop()
         self.menu_patcher.stop()
@@ -36,6 +43,18 @@ class TestDisplayTranslation(unittest.TestCase):
         new_translation = "Hello, world!"
         self.display.update_label(new_translation)
         self.mock_label_instance.config.assert_called_once_with(text=new_translation)
+
+    def test_update_label_grows_window_for_long_text(self):
+        """ Window grows (bottom-anchored) when the label needs more height """
+        self.mock_label_instance.winfo_reqheight.return_value = 160
+        self.display.update_label("a very long translation that wraps to several lines")
+        self.mock_root.geometry.assert_called_with("1536x180+192+800")
+
+    def test_update_label_keeps_base_height_for_short_text(self):
+        """ Short text keeps the configured base height: no resize call """
+        self.mock_label_instance.winfo_reqheight.return_value = 70
+        self.display.update_label("short")
+        self.mock_root.geometry.assert_not_called()
 
     def test_start_gui(self):
         """ Test starting the Tkinter GUI loop """

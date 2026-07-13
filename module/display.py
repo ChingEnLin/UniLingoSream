@@ -108,8 +108,15 @@ class DisplayTranslation:
         self.root.geometry(f"+{x}+{y}")
 
     def update_label(self, text):
-        """ Updates the label with the new translation. """
+        """ Updates the label and resizes the window to fit, bottom edge anchored. """
         self.label.config(text=text)
+        self.root.update_idletasks()
+        needed = self.label.winfo_reqheight() + 20
+        base = self.config["window_height"]
+        height = max(base, min(needed, base * 3))
+        if height != self.root.winfo_height():
+            y = self.root.winfo_y() + self.root.winfo_height() - height
+            self.root.geometry(f"{self.root.winfo_width()}x{height}+{self.root.winfo_x()}+{y}")
 
     def start_gui(self):
         """ Starts the Tkinter GUI loop. """
