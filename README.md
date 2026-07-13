@@ -8,7 +8,6 @@ UniLingoStream is a real-time translation tool designed to break down language b
 - Real-time speech transcription and translation using the Gemini Live API (google-genai SDK)
 - Custom floating borderless translation overlay
 - Session-accumulated token usage and cost logging
-- Native macOS fullscreen mode support (overlay floats over full-screen spaces and apps)
 
 ## Prerequisites
 
@@ -60,6 +59,8 @@ python main.py
 
 The application will start capturing system audio, streaming it to the Gemini Live API, and showing the translation in a transparent overlay window.
 
+> Note: the overlay floats over normal and maximized windows, but macOS isolates native fullscreen (green-button) apps in their own Space, so the overlay cannot appear over them. Maximize the video window instead of using native fullscreen.
+
 ### Configuration
 
 You can customize the application behavior by modifying config.json. The supported parameters are:
@@ -74,7 +75,7 @@ You can customize the application behavior by modifying config.json. The support
 - module/audio_capturer.py: Captures real-time audio chunking from the configured audio input device and routes it to an async queue.
 - module/audio_processer.py: Performs energy-based Voice Activity Detection (VAD) to filter silence before sending audio.
 - module/transcriber.py: Manages the WebSocket connection to the Gemini Live API, feeds incoming audio, decodes translated text, and logs cumulative token/cost statistics.
-- module/display.py: Renders the Tkinter subtitle overlay window, manages transparency, dragging logic, and configures native macOS fullscreen spaces support.
+- module/display.py: Renders the Tkinter subtitle overlay window, manages transparency, and dragging logic.
 - module/utility/log.py: Configures custom logging formatters and handlers.
 
 ## Development and Testing
