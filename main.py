@@ -82,6 +82,13 @@ if __name__ == "__main__":
     audio_capturer = AudioCapturer(async_loop, audio_queue)
     display_translation = DisplayTranslation()
 
+    # Surface silent fallback: default input is the microphone, not system audio
+    if audio_capturer.device_index is None:
+        display_translation.update_label(
+            f"WARNING: audio device '{audio_capturer.device_name}' not found - "
+            "capturing default input (microphone)"
+        )
+
     # Start background thread for asyncio loop
     t = threading.Thread(
         target=run_async_loop, 

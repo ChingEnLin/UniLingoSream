@@ -70,6 +70,10 @@ class TestAudioCapturer(unittest.TestCase):
                 self.assertEqual(capturer.sample_rate, 16000)
                 self.assertEqual(capturer.channels, 1)
 
+    def test_device_name_attribute(self):
+        """ The configured device name is exposed for warning messages """
+        self.assertEqual(self.audio_capturer.device_name, "BlackHole 2ch")
+
     def test_find_device_index_fallback(self):
         """ Test fallback when device is not found """
         self.mock_query.return_value = [

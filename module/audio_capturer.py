@@ -30,13 +30,13 @@ class AudioCapturer:
         self.audio_queue = audio_queue
         self.sample_rate = config.get("sample_rate", DEFAULT_CONFIG["sample_rate"])
         self.channels = config.get("channels", DEFAULT_CONFIG["channels"])
-        device_name = config.get("device_name", DEFAULT_CONFIG["device_name"])
-        
+        self.device_name = config.get("device_name", DEFAULT_CONFIG["device_name"])
+
         # Stream in ~100ms chunks (1600 samples @ 16kHz)
         self.blocksize = int(self.sample_rate * self.BLOCK_DURATION_SEC)
-        
+
         # Find device index by name
-        self.device_index = self._find_device_index(device_name)
+        self.device_index = self._find_device_index(self.device_name)
         
         self.stream = sd.InputStream(
             callback=self.audio_callback,
