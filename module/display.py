@@ -25,6 +25,7 @@ DEFAULT_UI_CONFIG = {
 class DisplayTranslation:
     """ This class is responsible for displaying the real-time translation on the GUI. """
     def __init__(self, config_path="config.json", root=None, config=None):
+        self.config_path = config_path
         # Load config with defaults
         self.config = DEFAULT_UI_CONFIG.copy()
 
@@ -59,8 +60,11 @@ class DisplayTranslation:
 
         width = int(screen_width * self.config["window_width_percent"] / 100)
         height = self.config["window_height"]
-        x = (screen_width - width) // 2
-        y = screen_height - height - self.config["bottom_margin"]
+        x = self.config.get("window_x")
+        y = self.config.get("window_y")
+        if x is None or y is None:
+            x = (screen_width - width) // 2
+            y = screen_height - height - self.config["bottom_margin"]
 
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
@@ -81,6 +85,7 @@ class DisplayTranslation:
             for widget in (self.root, self.label):
                 widget.bind("<Button-1>", self.start_drag)
                 widget.bind("<B1-Motion>", self.drag)
+                widget.bind("<ButtonRelease-1>", self.end_drag)
 
         self._drag_data = {"x": 0, "y": 0}
 
@@ -106,6 +111,18 @@ class DisplayTranslation:
         x = self.root.winfo_x() - self._drag_data["x"] + event.x
         y = self.root.winfo_y() - self._drag_data["y"] + event.y
         self.root.geometry(f"+{x}+{y}")
+
+    def end_drag(self, event):
+        """ Persists the dragged window position to the config file. """
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("ui", {})["window_x"] = self.root.winfo_x()
+            data["ui"]["window_y"] = self.root.winfo_y()
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning("Could not persist window position: %s", e)
 
     def update_label(self, text):
         """ Updates the label and resizes the window to fit, bottom edge anchored. """

@@ -56,6 +56,26 @@ class TestDisplayTranslation(unittest.TestCase):
         self.display.update_label("short")
         self.mock_root.geometry.assert_not_called()
 
+    def test_end_drag_persists_position(self):
+        """ Releasing a drag writes window_x/window_y back to config.json """
+        import json as jsonlib
+        from unittest.mock import mock_open
+        self.mock_root.winfo_x.return_value = 300
+        self.mock_root.winfo_y.return_value = 500
+        m = mock_open(read_data='{"ui": {}}')
+        with patch("module.display.open", m):
+            self.display.end_drag(MagicMock())
+        written = "".join(call.args[0] for call in m().write.call_args_list)
+        data = jsonlib.loads(written)
+        self.assertEqual(data["ui"]["window_x"], 300)
+        self.assertEqual(data["ui"]["window_y"], 500)
+
+    def test_saved_position_used_at_startup(self):
+        """ A persisted position overrides the computed centered position """
+        display = DisplayTranslation(root=self.mock_root, config={"window_x": 10, "window_y": 20})
+        geometry_arg = self.mock_root.geometry.call_args_list[0].args[0]
+        self.assertTrue(geometry_arg.endswith("+10+20"))
+
     def test_start_gui(self):
         """ Test starting the Tkinter GUI loop """
         self.display.start_gui()
