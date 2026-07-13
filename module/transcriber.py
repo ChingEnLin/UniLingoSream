@@ -29,7 +29,8 @@ class TranscriberTranslator:
                     "model": "gemini-3.5-live-translate-preview",
                     "target_language": "zh-TW",
                     "subtitle_timeout_seconds": 4.0,
-                    "sentence_pause_seconds": 1.5
+                    "sentence_pause_seconds": 1.5,
+                    "idle_reset_seconds": 30.0
                 },
                 "audio": {
                     "device_name": "BlackHole 2ch",
@@ -51,6 +52,8 @@ class TranscriberTranslator:
             self.api_config["subtitle_timeout_seconds"] = kwargs["subtitle_timeout_seconds"]
         if "sentence_pause_seconds" in kwargs:
             self.api_config["sentence_pause_seconds"] = kwargs["sentence_pause_seconds"]
+        if "idle_reset_seconds" in kwargs:
+            self.api_config["idle_reset_seconds"] = kwargs["idle_reset_seconds"]
 
         self.client = genai.Client()
         self.model_id = self.api_config.get("model", "gemini-3.5-live-translate-preview")
@@ -60,6 +63,7 @@ class TranscriberTranslator:
         self.last_activity_time = 0.0
         self.timeout_seconds = self.api_config.get("subtitle_timeout_seconds", 4.0)
         self.pause_threshold = self.api_config.get("sentence_pause_seconds", 1.5)
+        self.idle_reset_seconds = self.api_config.get("idle_reset_seconds", 30.0)
         self.session = None
         self.accumulated_prompt_tokens = 0
         self.accumulated_candidates_tokens = 0
@@ -197,7 +201,20 @@ class TranscriberTranslator:
         except asyncio.CancelledError:
             pass
 
-    async def connect_and_run(self, audio_queue: asyncio.Queue):
+    async def idle_monitor_loop(self):
+        """ Monitors idle time and raises an exception if idle threshold is exceeded to force reset """
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                if self.last_activity_time > 0:
+                    idle_duration = asyncio.get_event_loop().time() - self.last_activity_time
+                    if idle_duration > self.idle_reset_seconds:
+                        logger.info("Session idle for %.1fs (threshold %.1fs). Resetting connection...", idle_duration, self.idle_reset_seconds)
+                        raise asyncio.TimeoutError("Session idle timeout exceeded")
+        except asyncio.CancelledError:
+            pass
+
+    async def connect_and_run(self, audio_queue: asyncio.Queue, on_connect=None, on_disconnect=None):
         """ Establishes connection and handles reconnect loops with exponential backoff """
         connect_config = self.get_connect_config()
         
@@ -220,6 +237,18 @@ class TranscriberTranslator:
                     self.session = session
                     logger.info("Connected to Gemini Live successfully.")
                     self.latest_translation = "Listening..."
+                    self.last_activity_time = asyncio.get_event_loop().time()
+
+                    if on_connect:
+                        try:
+                            if asyncio.iscoroutinefunction(on_connect):
+                                await on_connect()
+                            else:
+                                res = on_connect()
+                                if asyncio.iscoroutine(res):
+                                    await res
+                        except Exception as cb_err:
+                            logger.error("Error in on_connect callback: %s", cb_err)
 
                     async def reset_delay_after_stable():
                         try:
@@ -237,9 +266,16 @@ class TranscriberTranslator:
                     receive_task = asyncio.create_task(self.receive_translation_loop())
                     clear_task = asyncio.create_task(self.clear_subtitle_timeout_loop())
                     
+                    tasks = [send_task, receive_task, clear_task]
+                    if self.idle_reset_seconds > 0:
+                        idle_task = asyncio.create_task(self.idle_monitor_loop())
+                        tasks.append(idle_task)
+                    else:
+                        idle_task = None
+
                     # Wait for either task to fail/complete
                     done, pending = await asyncio.wait(
-                        [send_task, receive_task, clear_task],
+                        tasks,
                         return_when=asyncio.FIRST_EXCEPTION
                     )
                     
@@ -263,6 +299,16 @@ class TranscriberTranslator:
                 self.session = None
                 self.current_conn_prompt_tokens = 0
                 self.current_conn_candidates_tokens = 0
+                if on_disconnect:
+                    try:
+                        if asyncio.iscoroutinefunction(on_disconnect):
+                            await on_disconnect()
+                        else:
+                            res = on_disconnect()
+                            if asyncio.iscoroutine(res):
+                                await res
+                    except Exception as cb_err:
+                        logger.error("Error in on_disconnect callback: %s", cb_err)
 
     def get_transcription(self):
         """ Returns the latest translation string """

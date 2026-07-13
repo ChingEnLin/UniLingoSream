@@ -40,15 +40,19 @@ def run_async_loop(loop, queue, transcriber, capturer):
     """
     asyncio.set_event_loop(loop)
     
-    # Start the sounddevice audio input capture stream
-    capturer.start_stream()
-    
     try:
-        # Run the transcriber WebSocket loop
-        loop.run_until_complete(transcriber.connect_and_run(queue))
+        # Run the transcriber WebSocket loop with connect/disconnect callbacks for stream warming
+        loop.run_until_complete(
+            transcriber.connect_and_run(
+                queue,
+                on_connect=capturer.start_stream,
+                on_disconnect=capturer.stop_stream
+            )
+        )
     except Exception as e:
         logger.error("Error in background async event loop: %s", e)
     finally:
+        # Safeguard to ensure capturing is stopped on loop termination
         capturer.stop_stream()
         loop.close()
 

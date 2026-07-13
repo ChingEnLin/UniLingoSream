@@ -10,7 +10,7 @@ class AudioCapturer:
     """Captures audio from microphone in raw 16-bit PCM mono format
     and pushes it thread-safely to an asyncio queue.
     """
-    BLOCK_DURATION_SEC = 0.1
+    BLOCK_DURATION_SEC = 0.05
     HANGOVER_SEC = 1.0
 
     def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None, device_name=None):
@@ -18,7 +18,8 @@ class AudioCapturer:
             "device_name": "BlackHole 2ch",
             "sample_rate": 16000,
             "channels": 1,
-            "silence_rms_threshold": 300
+            "silence_rms_threshold": 300,
+            "block_duration_seconds": 0.05
         }
         if config is None:
             try:
@@ -34,13 +35,14 @@ class AudioCapturer:
         self.sample_rate = config.get("sample_rate", DEFAULT_CONFIG["sample_rate"])
         self.channels = config.get("channels", DEFAULT_CONFIG["channels"])
         self.device_name = device_name or config.get("device_name", DEFAULT_CONFIG["device_name"])
+        self.block_duration_sec = config.get("block_duration_seconds", self.BLOCK_DURATION_SEC)
 
-        # Stream in ~100ms chunks (1600 samples @ 16kHz)
-        self.blocksize = int(self.sample_rate * self.BLOCK_DURATION_SEC)
+        # Stream in chunk size based on block duration (e.g. 50ms = 800 samples @ 16kHz)
+        self.blocksize = int(self.sample_rate * self.block_duration_sec)
 
         # ponytail: RMS silence gate; threshold is a calibration knob in config.json (int16 units)
         self.silence_rms_threshold = config.get("silence_rms_threshold", DEFAULT_CONFIG["silence_rms_threshold"])
-        self._hangover_blocks = int(self.HANGOVER_SEC / self.BLOCK_DURATION_SEC)
+        self._hangover_blocks = int(self.HANGOVER_SEC / self.block_duration_sec)
         self._silent_block_count = self._hangover_blocks  # start gated until first speech
 
         # Find device index by name

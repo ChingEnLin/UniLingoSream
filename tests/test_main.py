@@ -17,9 +17,13 @@ class TestMain(unittest.TestCase):
 
         run_async_loop(mock_loop, mock_queue, mock_transcriber, mock_capturer)
 
-        mock_capturer.start_stream.assert_called_once()
+        mock_capturer.start_stream.assert_not_called()
         mock_loop.run_until_complete.assert_called_once_with(
-            mock_transcriber.connect_and_run(mock_queue)
+            mock_transcriber.connect_and_run(
+                mock_queue,
+                on_connect=mock_capturer.start_stream,
+                on_disconnect=mock_capturer.stop_stream
+            )
         )
         mock_capturer.stop_stream.assert_called_once()
         mock_loop.close.assert_called_once()
@@ -37,7 +41,7 @@ class TestMain(unittest.TestCase):
             run_async_loop(mock_loop, mock_queue, mock_transcriber, mock_capturer)
             mock_log_err.assert_called_once()
 
-        mock_capturer.start_stream.assert_called_once()
+        mock_capturer.start_stream.assert_not_called()
         mock_capturer.stop_stream.assert_called_once()
         mock_loop.close.assert_called_once()
 
