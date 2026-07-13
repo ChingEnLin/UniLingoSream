@@ -6,7 +6,7 @@ import json
 import os
 import logging
 
-logger = logging.getLogger('root')
+logger = logging.getLogger(__name__)
 
 DEFAULT_UI_CONFIG = {
     "font_family": "Helvetica",

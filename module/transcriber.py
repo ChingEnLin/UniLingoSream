@@ -4,10 +4,14 @@ import json
 from google import genai
 from google.genai import types
 
-logger = logging.getLogger('root')
+logger = logging.getLogger(__name__)
 
 class TranscriberTranslator:
     """ Transcriber module for transcribing and translating audio data using Gemini Live Client """
+    # Gemini 3.5 Live pricing per token: $3.50/1M input, $21.00/1M output
+    PROMPT_TOKEN_COST = 0.0000035
+    OUTPUT_TOKEN_COST = 0.000021
+
     def __init__(self, config_path="config.json", **kwargs):
         self.full_config = None
         try:
@@ -127,8 +131,11 @@ class TranscriberTranslator:
                         self.current_conn_prompt_tokens = prompt_tokens
                         self.current_conn_candidates_tokens = candidates_tokens
                         
-                        # Gemini 3.5 Live pricing: $3.50/1M input, $21.00/1M output
-                        estimated_cost = (self.accumulated_prompt_tokens * 0.0000035) + (self.accumulated_candidates_tokens * 0.000021)
+                        # Estimated cost using class-level pricing constants
+                        estimated_cost = (
+                            self.accumulated_prompt_tokens * self.PROMPT_TOKEN_COST
+                            + self.accumulated_candidates_tokens * self.OUTPUT_TOKEN_COST
+                        )
                         
                         logger.info(
                             "Session Accumulated - Prompt Tokens: %d, Candidates Tokens: %d, Estimated Cost: $%.6f",
@@ -260,3 +267,16 @@ class TranscriberTranslator:
     def get_transcription(self):
         """ Returns the latest translation string """
         return self.latest_translation
+
+    def log_session_summary(self):
+        """ Logs total token usage and estimated cost for the whole session. """
+        cost = (
+            self.accumulated_prompt_tokens * self.PROMPT_TOKEN_COST
+            + self.accumulated_candidates_tokens * self.OUTPUT_TOKEN_COST
+        )
+        logger.info(
+            "Session summary - prompt tokens: %d, output tokens: %d, estimated cost: $%.2f",
+            self.accumulated_prompt_tokens,
+            self.accumulated_candidates_tokens,
+            cost
+        )

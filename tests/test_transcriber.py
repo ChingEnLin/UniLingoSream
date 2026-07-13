@@ -424,5 +424,17 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Reconnecting", translator.latest_translation)
         self.assertIn("ValueError", translator.latest_translation)
 
+    def test_log_session_summary(self):
+        """ Shutdown summary logs accumulated tokens and cost """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        translator.accumulated_prompt_tokens = 1000000
+        translator.accumulated_candidates_tokens = 1000000
+        with patch('module.transcriber.logger.info') as mock_info:
+            translator.log_session_summary()
+            mock_info.assert_called_once()
+            logged = mock_info.call_args[0][0] % tuple(mock_info.call_args[0][1:])
+        self.assertIn("1000000", logged)
+        self.assertIn("24.50", logged)  # 3.50 input + 21.00 output per 1M tokens
+
 if __name__ == '__main__':
     unittest.main()

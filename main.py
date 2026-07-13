@@ -123,3 +123,4 @@ if __name__ == "__main__":
     # Start Tkinter GUI loop
     logger.info("Starting subtitle display overlay...")
     display_translation.start_gui()
+    transcriber_translator.log_session_summary()
