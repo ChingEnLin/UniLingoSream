@@ -7,6 +7,7 @@ the Tkinter GUI subtitle display.
 
 import os
 import sys
+import json
 import argparse
 import asyncio
 import threading
@@ -14,7 +15,6 @@ from dotenv import load_dotenv
 
 from module.audio_capturer import AudioCapturer
 from module.transcriber import TranscriberTranslator
-from module.display import DisplayTranslation
 from module.utility import log
 
 logger = log.setup_custom_logger('root')
@@ -72,11 +72,39 @@ def poll_transcription(display, transcriber, last_rendered=""):
     display.root.after(POLL_INTERVAL_MS, poll_transcription, display, transcriber, text)
 
 
+def make_display(backend_override=None, config_path="config.json"):
+    """Selects the overlay backend: CLI --backend, else config `ui.backend` (tk | appkit).
+
+    AppKit is imported lazily so non-macOS environments (Linux/CI) never load it.
+    """
+    backend = backend_override
+    if backend is None and os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                backend = json.load(f).get("ui", {}).get("backend")
+        except Exception as e:
+            logger.warning("Could not read ui.backend from %s: %s. Using tk.", config_path, e)
+
+    if backend == "appkit":
+        try:
+            from module.display_appkit import DisplayTranslation
+            return DisplayTranslation()
+        except ImportError as e:
+            logger.warning(
+                "AppKit backend unavailable (%s); falling back to tk. "
+                "Install pyobjc-framework-Cocoa for the native overlay.", e
+            )
+
+    from module.display import DisplayTranslation
+    return DisplayTranslation()
+
+
 def parse_args(argv=None):
     """Parses CLI overrides. Unknown args are ignored so test runners' argv doesn't break."""
     parser = argparse.ArgumentParser(description="Real-time translation subtitle overlay")
     parser.add_argument("--target", help="Target language code override, e.g. en-US")
     parser.add_argument("--device", help="Audio input device name substring override")
+    parser.add_argument("--backend", choices=["tk", "appkit"], help="Overlay backend override")
     parser.add_argument("--list-devices", action="store_true", help="Print audio devices and exit")
     args, _ = parser.parse_known_args(argv)
     return args
@@ -104,7 +132,7 @@ if __name__ == "__main__":
         overrides["target_language"] = args.target
     transcriber_translator = TranscriberTranslator(**overrides)
     audio_capturer = AudioCapturer(async_loop, audio_queue, device_name=args.device)
-    display_translation = DisplayTranslation()
+    display_translation = make_display(args.backend)
 
     # Surface silent fallback: default input is the microphone, not system audio
     if audio_capturer.device_index is None:

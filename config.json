@@ -14,8 +14,9 @@
     "block_duration_seconds": 0.05
   },
   "ui": {
+    "backend": "appkit",
     "font_family": "Helvetica",
-    "font_size": 24,
+    "font_size": 32,
     "text_color": "#FFFFFF",
     "bg_color": "#000000",
     "bg_opacity": 0.6,
@@ -24,7 +25,7 @@
     "bottom_margin": 100,
     "always_on_top": true,
     "draggable": true,
-    "window_x": -1570,
-    "window_y": 769
+    "window_x": 5,
+    "window_y": 954
   }
 }

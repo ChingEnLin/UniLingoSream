@@ -94,31 +94,36 @@ class TestMain(unittest.TestCase):
     @patch('module.transcriber.TranscriberTranslator')
     @patch('module.audio_capturer.AudioCapturer')
     @patch('module.display.DisplayTranslation')
+    @patch('json.load', return_value={})
     @patch('threading.Thread')
     @patch('asyncio.new_event_loop')
     @patch('asyncio.Queue')
     @patch('os.getenv')
     def test_main_execution_success(
-        self, mock_getenv, mock_queue_class, mock_new_loop, 
-        mock_thread_class, mock_display_class, mock_capturer_class, mock_transcriber_class
+        self, mock_getenv, mock_queue_class, mock_new_loop, mock_thread_class,
+        mock_json_load, mock_display_class, mock_capturer_class, mock_transcriber_class
     ):
-        """ Test that the main execution flows correctly when API key is found """
+        """ Test that the main execution flows correctly when API key is found.
+
+        json.load is stubbed to {} so make_display resolves to the tk backend regardless
+        of the on-disk config.json (appkit selects a native GUI loop that would block).
+        """
         mock_getenv.return_value = "fake-api-key"
         mock_new_loop.return_value = MagicMock(spec=asyncio.AbstractEventLoop)
-        
+
         import runpy
         runpy.run_path("main.py", run_name="__main__")
-        
+
         mock_transcriber_class.assert_called_once()
         mock_capturer_class.assert_called_once()
         mock_display_class.assert_called_once()
         mock_thread_class.assert_called_once()
-        
+
         # Verify daemon is True
         kwargs = mock_thread_class.call_args[1]
         self.assertTrue(kwargs.get('daemon'))
-        
-        # Verify Tkinter GUI is started
+
+        # Verify GUI is started
         mock_display_class.return_value.start_gui.assert_called_once()
 
         from main import AUDIO_QUEUE_MAXSIZE
@@ -129,13 +134,14 @@ class TestMain(unittest.TestCase):
     @patch('module.transcriber.TranscriberTranslator')
     @patch('module.audio_capturer.AudioCapturer')
     @patch('module.display.DisplayTranslation')
+    @patch('json.load', return_value={})
     @patch('threading.Thread')
     @patch('asyncio.new_event_loop')
     @patch('asyncio.Queue')
     @patch('os.getenv')
     def test_main_warns_on_device_fallback(
-        self, mock_getenv, mock_queue_class, mock_new_loop,
-        mock_thread_class, mock_display_class, mock_capturer_class, mock_transcriber_class
+        self, mock_getenv, mock_queue_class, mock_new_loop, mock_thread_class,
+        mock_json_load, mock_display_class, mock_capturer_class, mock_transcriber_class
     ):
         """ Missing BlackHole must produce a visible overlay warning """
         mock_getenv.return_value = "fake-api-key"
