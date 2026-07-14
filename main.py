@@ -8,11 +8,13 @@ the Tkinter GUI subtitle display.
 import os
 import sys
 import json
+import atexit
 import argparse
 import asyncio
 import threading
 from dotenv import load_dotenv
 
+from module import audio_route
 from module.audio_capturer import AudioCapturer
 from module.transcriber import TranscriberTranslator
 from module.utility import log
@@ -120,6 +122,16 @@ if __name__ == "__main__":
     if not os.getenv("GEMINI_API_KEY"):
         logger.error("GEMINI_API_KEY not found in env variables or .env file! Please set it.")
         sys.exit(1)
+
+    # Point system output at the Multi-Output Device so audio reaches BlackHole for
+    # capture, then restore the previous device on exit. No-op without SwitchAudioSource.
+    output_device = json.load(open("config.json", encoding="utf-8")).get(
+        "audio", {}
+    ).get("output_device", "Multi-Output Device") if os.path.exists("config.json") else "Multi-Output Device"
+    _prev_output = audio_route.current_output()
+    if audio_route.set_output(output_device) and _prev_output:
+        atexit.register(audio_route.set_output, _prev_output)  # tk backend / Ctrl+C
+        audio_route.restore_on_terminate(_prev_output)          # appkit Quit (terminate:)
 
     # Setup asyncio queue and loop
     async_loop = asyncio.new_event_loop()

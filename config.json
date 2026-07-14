@@ -8,6 +8,7 @@
   },
   "audio": {
     "device_name": "BlackHole 2ch",
+    "output_device": "unilingostream",
     "sample_rate": 16000,
     "channels": 1,
     "silence_rms_threshold": 300,
@@ -20,12 +21,10 @@
     "text_color": "#FFFFFF",
     "bg_color": "#000000",
     "bg_opacity": 0.6,
-    "window_height": 90,
+    "window_height": 70,
     "window_width_percent": 80,
     "bottom_margin": 100,
     "always_on_top": true,
-    "draggable": true,
-    "window_x": 5,
-    "window_y": 954
+    "draggable": true
   }
 }

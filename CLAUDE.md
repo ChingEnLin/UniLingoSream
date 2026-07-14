@@ -24,6 +24,11 @@ CI (`.github/workflows`) runs on push/PR to `dev` only.
 - `main.py` - parses CLI args, wires the three components, starts a daemon thread running the
   asyncio loop (`connect_and_run`), polls `get_transcription()` into the display every 50 ms
   from the Tk event loop, logs a token/cost summary on exit.
+- `module/audio_route.py` - switches the macOS default output to the Multi-Output Device on launch
+  (`audio.output_device` in config.json) and restores the previous device on quit, via the
+  `SwitchAudioSource` CLI. Restore is wired two ways in `main.py`: `atexit` (tk backend / Ctrl+C)
+  and an `NSApplicationWillTerminate` observer (the AppKit Quit menu calls `terminate:`, which
+  exits at the C level and skips atexit). No-op if SwitchAudioSource is absent.
 - `module/audio_capturer.py` - `AudioCapturer`: `sd.InputStream` callback pushes 100 ms int16 PCM
   chunks into a bounded asyncio queue; RMS silence gate with 1 s hangover drops silence so it is
   not streamed (and billed).
@@ -39,6 +44,9 @@ CI (`.github/workflows`) runs on push/PR to `dev` only.
 - macOS-oriented. Needs BlackHole routed via a Multi-Output Device to capture system output (see
   README). If BlackHole is missing the capturer falls back to the default input (microphone) and
   shows a warning on the overlay. PortAudio (`libportaudio2`) required on Linux/CI.
+- `UniLingoStream.command` is a double-clickable Finder launcher (activates venv, runs main.py).
+  Automatic output switching needs `switchaudio-osx` (`brew install switchaudio-osx`); without it
+  the app runs but you route audio manually.
 - `GEMINI_API_KEY` comes from `.env` (see `.env.example`); the app exits at startup without it.
 - All tuning lives in `config.json`: model, target language, subtitle timeouts, silence RMS
   threshold, UI fonts/colors/geometry. CLI flags override target language and device.

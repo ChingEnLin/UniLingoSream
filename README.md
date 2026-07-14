@@ -38,26 +38,37 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 To route system audio so that UniLingoStream can capture it:
 
-1. Install BlackHole:
+1. Install BlackHole and (for automatic output switching) SwitchAudioSource:
    ```bash
-   brew install blackhole-2ch
+   brew install blackhole-2ch switchaudio-osx
    ```
 2. Open Audio MIDI Setup (under Applications > Utilities).
 3. Click the + button in the bottom left and select Create Multi-Output Device.
 4. In the Multi-Output Device configuration, select both your primary output device (e.g., Headphones or Built-in Speakers) and BlackHole 2ch.
-5. Open macOS System Settings -> Sound.
-6. Set your Output device to the newly created Multi-Output Device.
-7. Set your Input device to BlackHole 2ch.
+
+That's it for the one-time setup. The Multi-Output Device configuration persists across
+reboots. You do **not** need to visit System Settings -> Sound each time: on launch the app
+switches your system output to the Multi-Output Device automatically (via SwitchAudioSource)
+and restores your previous device on quit. Set the device name under `audio.output_device`
+in `config.json` (defaults to `"Multi-Output Device"` — rename if you called yours something
+else). If SwitchAudioSource is not installed the app still runs; you just switch output
+manually as before.
 
 ## Usage
 
-Run the main application:
+Double-click **`UniLingoStream.command`** in Finder to launch (it activates the venv, runs the
+app, and opens a Terminal window for logs). The first launch may need a right-click -> Open to
+clear the Gatekeeper warning. Drag it to the Dock or Applications for one-click access.
+
+Or run it directly:
 
 ```bash
 python main.py
 ```
 
-The application will start capturing system audio, streaming it to the Gemini Live API, and showing the translation in a transparent overlay window.
+The application switches system output to the Multi-Output Device, captures that audio, streams
+it to the Gemini Live API, and shows the translation in a transparent overlay window. Quit via
+the "UL" menu-bar item (or Ctrl+C); your previous output device is restored on exit.
 
 > Note: the overlay floats over normal and maximized windows, but macOS isolates native fullscreen (green-button) apps in their own Space, so the overlay cannot appear over them. Maximize the video window instead of using native fullscreen.
 
@@ -71,7 +82,9 @@ You can customize the application behavior by modifying config.json. The support
 
 ## Project Structure
 
+- UniLingoStream.command: Double-clickable Finder launcher (activates the venv and runs main.py).
 - main.py: Main entry point. Wires the capturer, transcriber, and display modules, spawning a background thread to poll translations.
+- module/audio_route.py: Switches the macOS system output to the Multi-Output Device on launch and restores the previous device on quit (via SwitchAudioSource).
 - module/audio_capturer.py: Captures real-time audio from the configured input device, drops sustained silence (RMS gate), and routes speech chunks to an async queue.
 - module/transcriber.py: Manages the WebSocket connection to the Gemini Live API, feeds incoming audio, decodes translated text, and logs cumulative token/cost statistics.
 - module/display.py: Renders the Tkinter subtitle overlay window, manages transparency, and dragging logic.
