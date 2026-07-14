@@ -25,6 +25,7 @@ import objc
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSPanel, NSView,
     NSTextField, NSColor, NSFont, NSScreen, NSMenu, NSMenuItem, NSStatusBar,
+    NSSlider, NSEventTypeLeftMouseUp,
     NSBackingStoreBuffered, NSTextAlignmentCenter, NSLineBreakByWordWrapping,
     NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
     NSScreenSaverWindowLevel, NSVariableStatusItemLength,
@@ -95,6 +96,14 @@ class _Controller(NSObject):
             sender.setTitle_("Move bar")
             d._persist_position()
 
+    def fontSlider_(self, sender):
+        """ Resize live while dragging; persist to config only when the drag ends. """
+        d = self._display
+        d.set_font_size(sender.doubleValue(), persist=False)
+        event = NSApplication.sharedApplication().currentEvent()
+        if event is not None and event.type() == NSEventTypeLeftMouseUp:
+            d._persist_ui({"font_size": d._font_size})
+
 
 class DisplayTranslation:
     """ NSPanel subtitle overlay. Same interface as display.DisplayTranslation. """
@@ -161,9 +170,9 @@ class DisplayTranslation:
         self.field.setSelectable_(False)
         self.field.setAlignment_(NSTextAlignmentCenter)
         self.field.setTextColor_(_nscolor(self.config["text_color"]))
-        font = NSFont.fontWithName_size_(self.config["font_family"], self.config["font_size"]) \
-            or NSFont.systemFontOfSize_(self.config["font_size"])
-        self.field.setFont_(font)
+        self._font_family = self.config["font_family"]
+        self._font_size = self.config["font_size"]
+        self._apply_font()
         self.field.setUsesSingleLineMode_(False)
         self.field.cell().setWraps_(True)
         self.field.cell().setLineBreakMode_(NSLineBreakByWordWrapping)
@@ -182,6 +191,28 @@ class DisplayTranslation:
         )
         move_item.setTarget_(self._controller)
         menu.addItem_(move_item)
+
+        # Font-size slider embedded as a custom menu-item view (drag instead of clicking).
+        slider_view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 220, 34))
+        slider_label = NSTextField.alloc().initWithFrame_(NSMakeRect(14, 7, 46, 20))
+        slider_label.setStringValue_("Font")
+        slider_label.setBezeled_(False)
+        slider_label.setDrawsBackground_(False)
+        slider_label.setEditable_(False)
+        slider_label.setSelectable_(False)
+        slider_view.addSubview_(slider_label)
+        self._font_slider = NSSlider.alloc().initWithFrame_(NSMakeRect(58, 4, 150, 26))
+        self._font_slider.setMinValue_(12.0)
+        self._font_slider.setMaxValue_(96.0)
+        self._font_slider.setDoubleValue_(float(self._font_size))
+        self._font_slider.setContinuous_(True)
+        self._font_slider.setTarget_(self._controller)
+        self._font_slider.setAction_("fontSlider:")
+        slider_view.addSubview_(self._font_slider)
+        font_item = NSMenuItem.alloc().init()
+        font_item.setView_(slider_view)
+        menu.addItem_(font_item)
+
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit UniLingoStream", "terminate:", "q"
         )
@@ -205,22 +236,39 @@ class DisplayTranslation:
             y = screen.size.height - tk_y - self._height
         return x, y
 
+    def _apply_font(self):
+        font = NSFont.fontWithName_size_(self._font_family, self._font_size) \
+            or NSFont.systemFontOfSize_(self._font_size)
+        self.field.setFont_(font)
+
+    def set_font_size(self, size, persist=True):
+        """ Live font-size change; clamped, and persisted to config unless persist=False. """
+        self._font_size = max(12, min(int(size), 96))
+        self._apply_font()
+        self.update_label(self.field.stringValue())  # re-fit height for the new size
+        if persist:
+            self._persist_ui({"font_size": self._font_size})
+
+    def _persist_ui(self, values):
+        """ Merge values into config.json's ui section. """
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("ui", {}).update(values)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning("Could not persist ui settings: %s", e)
+
     def _persist_position(self):
         """ Save current position as top-left window_x/window_y (matches _resolve_origin
         and the Tk backend's convention). """
         frame = self.panel.frame()
         screen_h = NSScreen.mainScreen().frame().size.height
-        tk_x = int(frame.origin.x)
-        tk_y = int(screen_h - frame.origin.y - frame.size.height)
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data.setdefault("ui", {})["window_x"] = tk_x
-            data["ui"]["window_y"] = tk_y
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.warning("Could not persist window position: %s", e)
+        self._persist_ui({
+            "window_x": int(frame.origin.x),
+            "window_y": int(screen_h - frame.origin.y - frame.size.height),
+        })
 
     def update_label(self, text):
         """ Set text and grow height to fit, keeping the bottom edge anchored. """
@@ -263,6 +311,19 @@ def _selfcheck():
     x, y = d._resolve_origin(_S)
     assert x == (1000 - 800) // 2, "x should center when unset"
     assert y == 800 - 100 - 90, "tk top-left y not converted to appkit bottom-left"
+
+    # Live font-size clamp (constructs a real panel; persists to a throwaway config)
+    import tempfile
+    tmp = tempfile.mktemp(suffix=".json")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"ui": {}}, f)
+    d2 = DisplayTranslation(config={})
+    d2.config_path = tmp
+    d2.set_font_size(1000)
+    assert d2._font_size == 96, "font size not clamped to max"
+    d2.set_font_size(1)
+    assert d2._font_size == 12, "font size not clamped to min"
+    os.remove(tmp)
     print("display_appkit self-check passed")
 
 
