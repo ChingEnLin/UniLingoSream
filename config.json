@@ -2,6 +2,8 @@
   "api": {
     "model": "gemini-3.5-live-translate-preview",
     "target_language": "zh-TW",
+    "context": "",
+    "glossary": {},
     "subtitle_timeout_seconds": 4.0,
     "sentence_pause_seconds": 1.5,
     "idle_reset_seconds": 30.0
@@ -17,7 +19,7 @@
   "ui": {
     "backend": "appkit",
     "font_family": "Helvetica",
-    "font_size": 37,
+    "font_size": 57,
     "text_color": "#FFFFFF",
     "bg_color": "#000000",
     "bg_opacity": 0.6,
@@ -25,6 +27,8 @@
     "window_width_percent": 80,
     "bottom_margin": 100,
     "always_on_top": true,
-    "draggable": true
+    "draggable": true,
+    "window_x": 1833,
+    "window_y": 1004
   }
 }

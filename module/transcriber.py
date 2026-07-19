@@ -70,15 +70,37 @@ class TranscriberTranslator:
         self.current_conn_prompt_tokens = 0
         self.current_conn_candidates_tokens = 0
 
+    def _build_system_instruction(self):
+        """ Builds a system_instruction from config `context` + `glossary`, or None.
+
+        The translate model honors translation-biasing guidance (domain context and
+        term->translation overrides) but ignores formatting/suppression directives.
+        """
+        parts = []
+        context = (self.api_config.get("context") or "").strip()
+        if context:
+            parts.append(context)
+        glossary = self.api_config.get("glossary") or {}
+        if glossary:
+            lines = "\n".join(f'- "{term}" -> {tr}' for term, tr in glossary.items() if tr)
+            if lines:
+                parts.append("Translate these terms consistently:\n" + lines)
+        return "\n\n".join(parts) or None
+
     def get_connect_config(self):
         """ Generates LiveConnectConfig for the Gemini session """
         # TEXT modality: we never play the synthesized audio, so don't pay output-audio rates for it
-        return types.LiveConnectConfig(
+        cfg = types.LiveConnectConfig(
             response_modalities=[types.Modality.TEXT],
             translation_config=types.TranslationConfig(
                 target_language_code=self.api_config.get("target_language", "zh-TW")
             )
         )
+        instruction = self._build_system_instruction()
+        if instruction:
+            cfg.system_instruction = types.Content(parts=[types.Part(text=instruction)])
+            logger.info("Using system_instruction (%d chars)", len(instruction))
+        return cfg
 
     @staticmethod
     def _extract_text(content):

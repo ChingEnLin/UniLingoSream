@@ -49,6 +49,23 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.translation_config.target_language_code, "es-ES")
         self.assertEqual(config.response_modalities, [types.Modality.TEXT])
 
+    def test_system_instruction_from_context_and_glossary(self):
+        """ context + glossary become a system_instruction; empty -> none """
+        t = TranscriberTranslator(config_path="dummy.json")
+        t.api_config["context"] = ""
+        t.api_config["glossary"] = {}
+        self.assertIsNone(t._build_system_instruction())
+        self.assertIsNone(t.get_connect_config().system_instruction)
+
+        t.api_config["context"] = "Sci-fi drama about hackers."
+        t.api_config["glossary"] = {"Neo": "尼歐", "skip": ""}
+        instr = t._build_system_instruction()
+        self.assertIn("Sci-fi drama about hackers.", instr)
+        self.assertIn('"Neo" -> 尼歐', instr)
+        self.assertNotIn("skip", instr)  # blank translation dropped
+        self.assertEqual(
+            t.get_connect_config().system_instruction.parts[0].text, instr)
+
     def test_extract_text_from_model_turn(self):
         """ TEXT modality: text arrives in model_turn parts """
         content = MagicMock()
