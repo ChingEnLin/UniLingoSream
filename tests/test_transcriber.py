@@ -424,6 +424,58 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def test_thought_tokens_billed_as_output(self):
+        """ thoughts_token_count bills at the output rate and is reported separately from
+        response_token_count; counting only the latter under-reports the expensive half. """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        translator._account_tokens(
+            types.UsageMetadata(prompt_token_count=100, response_token_count=10, thoughts_token_count=40)
+        )
+        self.assertEqual(translator.accumulated_output_tokens, 50)
+
+    def test_turn_text_capped_keeping_the_tail(self):
+        """ The overlay clips overflow at the bottom, so a runaway turn must shed its head,
+        not its tail - the tail is the newest text. """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        translator.is_new_turn = True
+        translator._append_translation("x" * (TranscriberTranslator.MAX_TURN_CHARS + 50))
+        translator._append_translation("END")
+
+        self.assertEqual(len(translator.latest_translation), TranscriberTranslator.MAX_TURN_CHARS)
+        self.assertTrue(translator.latest_translation.endswith("END"))
+
+    async def test_capture_stops_before_reconnect_backoff(self):
+        """ on_disconnect must fire before the backoff sleep. Sleeping first left PortAudio
+        running for up to max_delay seconds with nothing draining the queue. """
+        # idle monitor off: its own sleep(1.0) would otherwise collide with the backoff below
+        translator = TranscriberTranslator(config_path="dummy.json", idle_reset_seconds=0)
+
+        mock_session = MagicMock()
+        mock_session.receive = MagicMock(side_effect=ConnectionResetError("dropped"))
+        mock_connect_cm = AsyncMock()
+        mock_connect_cm.__aenter__.return_value = mock_session
+        translator.client.aio.live.connect.return_value = mock_connect_cm
+
+        real_sleep = asyncio.sleep
+        events = []
+
+        async def mock_sleep(d):
+            events.append(f"sleep:{d}")
+            if d == 1.0:  # the backoff
+                raise asyncio.CancelledError("stop the loop")
+            await real_sleep(0.0)
+
+        with patch('module.transcriber.asyncio.sleep', side_effect=mock_sleep):
+            try:
+                await translator.connect_and_run(
+                    asyncio.Queue(), on_disconnect=lambda: events.append("stop_stream")
+                )
+            except asyncio.CancelledError:
+                pass
+
+        self.assertIn("stop_stream", events)
+        self.assertLess(events.index("stop_stream"), events.index("sleep:1.0"))
+
     async def test_idle_monitor_ignores_quiet_source(self):
         """ A quiet source must not force a reconnect: the gate sends nothing, so nothing
         is unanswered. This used to paint "Reconnecting..." over every silent passage. """

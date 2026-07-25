@@ -15,6 +15,13 @@ class TranscriberTranslator:
     PROMPT_TOKEN_COST = 0.0000035
     OUTPUT_TOKEN_COST = 0.000021
     SENTENCE_ENDERS = ("。", "？", "！", ".", "?", "!", "\n")
+    # The overlay lays text out from the top and clips what overflows its height cap, so an
+    # unbounded turn loses its tail - the newest words. Cap the head instead.
+    MAX_TURN_CHARS = 200
+    # How many usage_metadata messages to log at INFO. Open question: whether the counts are
+    # cumulative per connection or per message. One run answers it - a monotonic climb across
+    # these lines means cumulative (what _account_tokens assumes).
+    USAGE_LOG_COUNT = 20
 
     def __init__(self, config_path="config.json", **kwargs):
         self.full_config = load_config(config_path)
@@ -73,6 +80,7 @@ class TranscriberTranslator:
         self.accumulated_output_tokens = 0
         self.current_conn_prompt_tokens = 0
         self.current_conn_output_tokens = 0
+        self._usage_logs_left = self.USAGE_LOG_COUNT
 
     def _load_context_file(self):
         """ If api.context_file is set, load {context, glossary} from it (file wins over inline). """
@@ -161,15 +169,27 @@ class TranscriberTranslator:
         reported zero output tokens - the half that costs 6x the input rate.
         """
         prompt_tokens = getattr(metadata, "prompt_token_count", 0) or 0
-        output_tokens = getattr(metadata, "response_token_count", 0) or 0
+        response_tokens = getattr(metadata, "response_token_count", 0) or 0
+        # Thinking tokens are reported separately but bill at the output rate; leaving them
+        # out under-reports the expensive half of the bill.
+        thought_tokens = getattr(metadata, "thoughts_token_count", 0) or 0
 
         # Ensure they are integers to handle MagicMocks in unit tests
-        if not (isinstance(prompt_tokens, int) and isinstance(output_tokens, int)):
+        if not all(isinstance(v, int) for v in (prompt_tokens, response_tokens, thought_tokens)):
             return
+        output_tokens = response_tokens + thought_tokens
 
-        # ponytail: assumes the counts are cumulative per connection. The raw metadata is
-        # logged at DEBUG - if they turn out to be per-message, drop the delta and add
-        # the values straight in.
+        # ponytail: assumes the counts are cumulative per connection. The first
+        # USAGE_LOG_COUNT messages are logged at INFO - if the numbers turn out to be
+        # per-message, drop the delta and add the values straight in.
+        if self._usage_logs_left > 0:
+            self._usage_logs_left -= 1
+            logger.info(
+                "usage_metadata %d/%d - prompt=%d response=%d thoughts=%d total=%s",
+                self.USAGE_LOG_COUNT - self._usage_logs_left, self.USAGE_LOG_COUNT,
+                prompt_tokens, response_tokens, thought_tokens,
+                getattr(metadata, "total_token_count", None)
+            )
         logger.debug("usage_metadata: %s", metadata)
         self.accumulated_prompt_tokens += max(0, prompt_tokens - self.current_conn_prompt_tokens)
         self.accumulated_output_tokens += max(0, output_tokens - self.current_conn_output_tokens)
@@ -193,7 +213,7 @@ class TranscriberTranslator:
             self.current_turn_translation = ""
             self.is_new_turn = False
 
-        self.current_turn_translation += text
+        self.current_turn_translation = (self.current_turn_translation + text)[-self.MAX_TURN_CHARS:]
         self.latest_translation = self.current_turn_translation.strip()
         self.last_activity_time = current_time
         logger.debug("Translation: %s", self.latest_translation)
@@ -292,6 +312,7 @@ class TranscriberTranslator:
             while not audio_queue.empty():
                 audio_queue.get_nowait()
                 audio_queue.task_done()
+            backoff = 0.0
             try:
                 logger.info("Connecting to Gemini Live API...")
                 async with self.client.aio.live.connect(
@@ -349,13 +370,19 @@ class TranscriberTranslator:
             except Exception as e:
                 logger.error("Session disconnect or connection error: %s. Reconnecting in %.1fs...", e, delay)
                 self.latest_translation = f"Reconnecting ({type(e).__name__})..."
-                await asyncio.sleep(delay)
+                backoff = delay
                 delay = min(delay * factor, max_delay)
             finally:
                 self.session = None
                 self.current_conn_prompt_tokens = 0
                 self.current_conn_output_tokens = 0
                 await self._fire(on_disconnect, "on_disconnect")
+
+            # Sleep only after `finally` has stopped the capture stream. Sleeping inside
+            # `except` left PortAudio running for up to max_delay seconds with nothing
+            # draining the queue - 20 "audio queue is full" warnings per second.
+            # backoff stays 0.0 on the clean-exit path, where this is just a yield.
+            await asyncio.sleep(backoff)
 
     def get_transcription(self):
         """ Returns the latest translation string """
