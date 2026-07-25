@@ -5,6 +5,7 @@ import asyncio
 
 from main import run_async_loop, poll_transcription, POLL_INTERVAL_MS, parse_args
 
+
 class TestMain(unittest.TestCase):
     """ Test cases for main.py integration """
 
@@ -110,6 +111,7 @@ class TestMain(unittest.TestCase):
         """
         mock_getenv.return_value = "fake-api-key"
         mock_new_loop.return_value = MagicMock(spec=asyncio.AbstractEventLoop)
+        mock_capturer_class.return_value.error = None  # a healthy capturer reports no error
 
         import runpy
         runpy.run_path("main.py", run_name="__main__")
@@ -146,6 +148,7 @@ class TestMain(unittest.TestCase):
         """ Missing BlackHole must produce a visible overlay warning """
         mock_getenv.return_value = "fake-api-key"
         mock_new_loop.return_value = MagicMock(spec=asyncio.AbstractEventLoop)
+        mock_capturer_class.return_value.error = None
         mock_capturer_class.return_value.device_index = None
         mock_capturer_class.return_value.device_name = "BlackHole 2ch"
 
@@ -159,13 +162,37 @@ class TestMain(unittest.TestCase):
     @patch('module.transcriber.TranscriberTranslator')
     @patch('module.audio_capturer.AudioCapturer')
     @patch('module.display.DisplayTranslation')
+    @patch('json.load', return_value={})
+    @patch('threading.Thread')
+    @patch('asyncio.new_event_loop')
+    @patch('asyncio.Queue')
+    @patch('os.getenv')
+    def test_main_warns_on_stream_open_failure(
+        self, mock_getenv, mock_queue_class, mock_new_loop, mock_thread_class,
+        mock_json_load, mock_display_class, mock_capturer_class, mock_transcriber_class
+    ):
+        """ A capturer that could not open its stream must say so on the overlay """
+        mock_getenv.return_value = "fake-api-key"
+        mock_new_loop.return_value = MagicMock(spec=asyncio.AbstractEventLoop)
+        mock_capturer_class.return_value.error = "could not open audio input 'BlackHole 2ch': boom"
+
+        import runpy
+        runpy.run_path("main.py", run_name="__main__")
+
+        warning = mock_display_class.return_value.update_label.call_args[0][0]
+        self.assertIn("WARNING", warning)
+        self.assertIn("could not open audio input", warning)
+
+    @patch('module.transcriber.TranscriberTranslator')
+    @patch('module.audio_capturer.AudioCapturer')
+    @patch('module.display.DisplayTranslation')
     @patch('os.getenv')
     def test_main_execution_missing_api_key(
         self, mock_getenv, mock_display_class, mock_capturer_class, mock_transcriber_class
     ):
         """ Test that the main execution exits with error when API key is missing """
         mock_getenv.return_value = None
-        
+
         import runpy
         with patch('main.logger.error') as mock_log_err:
             with self.assertRaises(SystemExit) as cm:
@@ -186,6 +213,7 @@ class TestMain(unittest.TestCase):
         self.assertEqual(args.target, "en-US")
         self.assertEqual(args.device, "Loopback")
         self.assertTrue(args.list_devices)
+
 
 if __name__ == '__main__':
     unittest.main()

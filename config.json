@@ -3,8 +3,6 @@
     "model": "gemini-3.5-live-translate-preview",
     "target_language": "zh-TW",
     "context_file": "contexts/kyousuki.json",
-    "context": "",
-    "glossary": {},
     "subtitle_timeout_seconds": 4.0,
     "sentence_pause_seconds": 1.5,
     "idle_reset_seconds": 30.0

@@ -3,8 +3,9 @@ which is responsible for displaying the real-time translation on the GUI. """
 
 import tkinter as tk
 import json
-import os
 import logging
+
+from module.utility.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,7 @@ class DisplayTranslation:
         if config is not None:
             self.config.update(config)
         else:
-            try:
-                if os.path.exists(config_path):
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        file_config = json.load(f)
-                        if "ui" in file_config:
-                            self.config.update(file_config["ui"])
-            except Exception as e:
-                logger.error(f"Error loading configuration from {config_path}: {e}. Using default UI settings.")
+            self.config.update(load_config(config_path).get("ui", {}))
 
         if root is None:
             self.root = tk.Tk()

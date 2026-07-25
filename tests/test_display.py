@@ -72,7 +72,7 @@ class TestDisplayTranslation(unittest.TestCase):
 
     def test_saved_position_used_at_startup(self):
         """ A persisted position overrides the computed centered position """
-        display = DisplayTranslation(root=self.mock_root, config={"window_x": 10, "window_y": 20})
+        DisplayTranslation(root=self.mock_root, config={"window_x": 10, "window_y": 20})
         geometry_arg = self.mock_root.geometry.call_args_list[0].args[0]
         self.assertTrue(geometry_arg.endswith("+10+20"))
 

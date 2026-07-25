@@ -4,23 +4,20 @@ import json
 from google import genai
 from google.genai import types
 
+from module.utility.config import load_config
+
 logger = logging.getLogger(__name__)
+
 
 class TranscriberTranslator:
     """ Transcriber module for transcribing and translating audio data using Gemini Live Client """
     # Gemini 3.5 Live pricing per token: $3.50/1M input, $21.00/1M output
     PROMPT_TOKEN_COST = 0.0000035
     OUTPUT_TOKEN_COST = 0.000021
+    SENTENCE_ENDERS = ("。", "？", "！", ".", "?", "!", "\n")
 
     def __init__(self, config_path="config.json", **kwargs):
-        self.full_config = None
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                self.full_config = json.load(f)
-        except FileNotFoundError:
-            logger.info("Config file not found: %s. Using default configurations.", config_path)
-        except Exception as e:
-            logger.warning("Failed to load config file: %s (%s). Using default configurations.", config_path, e)
+        self.full_config = load_config(config_path)
 
         if not self.full_config:
             # Fallback/default config if config.json is missing or unreadable
@@ -40,7 +37,7 @@ class TranscriberTranslator:
             }
         self.api_config = self.full_config.get("api", {})
         self.audio_config = self.full_config.get("audio", {})
-        
+
         # Override with kwargs if provided for backward compatibility
         if "target_language" in kwargs:
             self.api_config["target_language"] = kwargs["target_language"]
@@ -68,10 +65,14 @@ class TranscriberTranslator:
         self.pause_threshold = self.api_config.get("sentence_pause_seconds", 1.5)
         self.idle_reset_seconds = self.api_config.get("idle_reset_seconds", 30.0)
         self.session = None
+        # Time of the last audio chunk we actually pushed to the socket. The idle monitor
+        # compares it against last_activity_time to tell "stream is wedged" (audio out, no
+        # text back) from "the source is simply quiet" (silence gate sending nothing).
+        self.last_sent_time = 0.0
         self.accumulated_prompt_tokens = 0
-        self.accumulated_candidates_tokens = 0
+        self.accumulated_output_tokens = 0
         self.current_conn_prompt_tokens = 0
-        self.current_conn_candidates_tokens = 0
+        self.current_conn_output_tokens = 0
 
     def _load_context_file(self):
         """ If api.context_file is set, load {context, glossary} from it (file wins over inline). """
@@ -144,6 +145,7 @@ class TranscriberTranslator:
                                 mime_type=f"audio/pcm;rate={self.audio_config.get('sample_rate', 16000)}"
                             )
                         )
+                        self.last_sent_time = asyncio.get_event_loop().time()
                     except Exception as e:
                         logger.error("Error sending realtime input: %s", e)
                         raise e
@@ -151,73 +153,75 @@ class TranscriberTranslator:
         except asyncio.CancelledError:
             pass
 
+    def _account_tokens(self, metadata):
+        """ Fold one message's usage_metadata into the session totals.
+
+        The Live API's UsageMetadata names the output field `response_token_count`; it has
+        no `candidates_token_count` (extra="forbid"), so reading that name silently
+        reported zero output tokens - the half that costs 6x the input rate.
+        """
+        prompt_tokens = getattr(metadata, "prompt_token_count", 0) or 0
+        output_tokens = getattr(metadata, "response_token_count", 0) or 0
+
+        # Ensure they are integers to handle MagicMocks in unit tests
+        if not (isinstance(prompt_tokens, int) and isinstance(output_tokens, int)):
+            return
+
+        # ponytail: assumes the counts are cumulative per connection. The raw metadata is
+        # logged at DEBUG - if they turn out to be per-message, drop the delta and add
+        # the values straight in.
+        logger.debug("usage_metadata: %s", metadata)
+        self.accumulated_prompt_tokens += max(0, prompt_tokens - self.current_conn_prompt_tokens)
+        self.accumulated_output_tokens += max(0, output_tokens - self.current_conn_output_tokens)
+        self.current_conn_prompt_tokens = prompt_tokens
+        self.current_conn_output_tokens = output_tokens
+
+    def _append_translation(self, text):
+        """ Append a text chunk to the subtitle currently on screen, splitting turns.
+
+        A turn ends on either signal: a pause longer than sentence_pause_seconds, or
+        sentence-ending punctuation. The next chunk then starts a fresh subtitle rather
+        than growing the old one forever.
+        """
+        current_time = asyncio.get_event_loop().time()
+
+        # If there was a pause of more than sentence_pause_seconds, start a new turn
+        if self.last_activity_time > 0 and current_time - self.last_activity_time > self.pause_threshold:
+            self.is_new_turn = True
+
+        if self.is_new_turn:
+            self.current_turn_translation = ""
+            self.is_new_turn = False
+
+        self.current_turn_translation += text
+        self.latest_translation = self.current_turn_translation.strip()
+        self.last_activity_time = current_time
+        logger.debug("Translation: %s", self.latest_translation)
+
+        # Instant split: if the sentence ends with punctuation, mark next turn as new
+        if self.latest_translation.endswith(self.SENTENCE_ENDERS):
+            logger.debug("Sentence boundary punctuation detected. Setting is_new_turn=True.")
+            self.is_new_turn = True
+
     async def receive_translation_loop(self):
         """ Listens for incoming translated text from the WebSocket """
         try:
-            sentence_enders = ("。", "？", "！", ".", "?", "!", "\n")
             async for response in self.session.receive():
-                # Track token usage and estimated cost
                 metadata = getattr(response, "usage_metadata", None)
                 if metadata:
-                    prompt_tokens = getattr(metadata, "prompt_token_count", 0)
-                    candidates_tokens = getattr(metadata, "candidates_token_count", 0)
-                    
-                    # Ensure they are integers to handle MagicMocks in unit tests
-                    if isinstance(prompt_tokens, int) and isinstance(candidates_tokens, int):
-                        # Compute deltas
-                        delta_prompt = max(0, prompt_tokens - self.current_conn_prompt_tokens)
-                        delta_candidates = max(0, candidates_tokens - self.current_conn_candidates_tokens)
-                        
-                        self.accumulated_prompt_tokens += delta_prompt
-                        self.accumulated_candidates_tokens += delta_candidates
-                        
-                        self.current_conn_prompt_tokens = prompt_tokens
-                        self.current_conn_candidates_tokens = candidates_tokens
-                        
-                        # Estimated cost using class-level pricing constants
-                        estimated_cost = (
-                            self.accumulated_prompt_tokens * self.PROMPT_TOKEN_COST
-                            + self.accumulated_candidates_tokens * self.OUTPUT_TOKEN_COST
-                        )
-                        
-                        logger.info(
-                            "Session Accumulated - Prompt Tokens: %d, Candidates Tokens: %d, Estimated Cost: $%.6f",
-                            self.accumulated_prompt_tokens,
-                            self.accumulated_candidates_tokens,
-                            estimated_cost
-                        )
+                    self._account_tokens(metadata)
 
                 if response.server_content:
                     content = response.server_content
-                    
+
                     # 1. Handle incoming translated text chunks
                     text = self._extract_text(content)
                     if text:
-                        current_time = asyncio.get_event_loop().time()
-
-                        # If there was a pause of more than sentence_pause_seconds, start a new turn
-                        if self.last_activity_time > 0:
-                            pause_duration = current_time - self.last_activity_time
-                            if pause_duration > self.pause_threshold:
-                                self.is_new_turn = True
-
-                        if self.is_new_turn:
-                            self.current_turn_translation = ""
-                            self.is_new_turn = False
-
-                        self.current_turn_translation += text
-                        self.latest_translation = self.current_turn_translation.strip()
-                        self.last_activity_time = current_time
-                        logger.info("Translation: %s", self.latest_translation)
-
-                        # Instant split: if the sentence ends with punctuation, mark next turn as new
-                        if self.latest_translation.endswith(sentence_enders):
-                            logger.info("Sentence boundary punctuation detected. Setting is_new_turn=True.")
-                            self.is_new_turn = True
+                        self._append_translation(text)
 
                     # 2. Check if the turn is complete
                     if content.turn_complete:
-                        logger.info("Turn complete.")
+                        logger.debug("Turn complete.")
                         self.is_new_turn = True
                         self.last_activity_time = asyncio.get_event_loop().time()
         except asyncio.CancelledError:
@@ -241,22 +245,43 @@ class TranscriberTranslator:
             pass
 
     async def idle_monitor_loop(self):
-        """ Monitors idle time and raises an exception if idle threshold is exceeded to force reset """
+        """ Forces a reconnect when the stream wedges: audio going out, nothing coming back.
+
+        Keyed off unanswered audio, not wall-clock silence. The RMS gate stops sending
+        during quiet passages, so last_sent_time stops advancing too and a silent stretch
+        never trips this - it used to, painting "Reconnecting..." over quiet scenes.
+        """
         try:
             while True:
                 await asyncio.sleep(1.0)
-                if self.last_activity_time > 0:
-                    idle_duration = asyncio.get_event_loop().time() - self.last_activity_time
-                    if idle_duration > self.idle_reset_seconds:
-                        logger.info("Session idle for %.1fs (threshold %.1fs). Resetting connection...", idle_duration, self.idle_reset_seconds)
-                        raise asyncio.TimeoutError("Session idle timeout exceeded")
+                if self.last_activity_time <= 0 or self.last_sent_time <= self.last_activity_time:
+                    continue  # nothing sent since the last answer: not wedged, just quiet
+                idle_duration = asyncio.get_event_loop().time() - self.last_activity_time
+                if idle_duration > self.idle_reset_seconds:
+                    logger.info(
+                        "No translation for %.1fs despite audio being sent (threshold %.1fs). "
+                        "Resetting connection...", idle_duration, self.idle_reset_seconds
+                    )
+                    raise asyncio.TimeoutError("Session idle timeout exceeded")
         except asyncio.CancelledError:
             pass
+
+    @staticmethod
+    async def _fire(callback, name):
+        """ Invoke a connect/disconnect callback that may be sync or async, never raising. """
+        if callback is None:
+            return
+        try:
+            result = callback()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.error("Error in %s callback: %s", name, e)
 
     async def connect_and_run(self, audio_queue: asyncio.Queue, on_connect=None, on_disconnect=None):
         """ Establishes connection and handles reconnect loops with exponential backoff """
         connect_config = self.get_connect_config()
-        
+
         initial_delay = 1.0
         max_delay = 60.0
         factor = 2.0
@@ -270,24 +295,16 @@ class TranscriberTranslator:
             try:
                 logger.info("Connecting to Gemini Live API...")
                 async with self.client.aio.live.connect(
-                    model=self.model_id, 
+                    model=self.model_id,
                     config=connect_config
                 ) as session:
                     self.session = session
                     logger.info("Connected to Gemini Live successfully.")
                     self.latest_translation = "Listening..."
                     self.last_activity_time = asyncio.get_event_loop().time()
+                    self.last_sent_time = 0.0  # nothing sent on this connection yet
 
-                    if on_connect:
-                        try:
-                            if asyncio.iscoroutinefunction(on_connect):
-                                await on_connect()
-                            else:
-                                res = on_connect()
-                                if asyncio.iscoroutine(res):
-                                    await res
-                        except Exception as cb_err:
-                            logger.error("Error in on_connect callback: %s", cb_err)
+                    await self._fire(on_connect, "on_connect")
 
                     async def reset_delay_after_stable():
                         try:
@@ -299,12 +316,12 @@ class TranscriberTranslator:
                             pass
 
                     reset_task = asyncio.create_task(reset_delay_after_stable())
-                    
+
                     # Start concurrent send, receive, and clear tasks
                     send_task = asyncio.create_task(self.send_audio_loop(audio_queue))
                     receive_task = asyncio.create_task(self.receive_translation_loop())
                     clear_task = asyncio.create_task(self.clear_subtitle_timeout_loop())
-                    
+
                     tasks = [send_task, receive_task, clear_task]
                     if self.idle_reset_seconds > 0:
                         idle_task = asyncio.create_task(self.idle_monitor_loop())
@@ -317,12 +334,12 @@ class TranscriberTranslator:
                         tasks,
                         return_when=asyncio.FIRST_EXCEPTION
                     )
-                    
+
                     # Cancel the other pending tasks
                     reset_task.cancel()
                     for task in pending:
                         task.cancel()
-                    
+
                     # Propagate exceptions to trigger reconnection
                     for task in done:
                         try:
@@ -337,17 +354,8 @@ class TranscriberTranslator:
             finally:
                 self.session = None
                 self.current_conn_prompt_tokens = 0
-                self.current_conn_candidates_tokens = 0
-                if on_disconnect:
-                    try:
-                        if asyncio.iscoroutinefunction(on_disconnect):
-                            await on_disconnect()
-                        else:
-                            res = on_disconnect()
-                            if asyncio.iscoroutine(res):
-                                await res
-                    except Exception as cb_err:
-                        logger.error("Error in on_disconnect callback: %s", cb_err)
+                self.current_conn_output_tokens = 0
+                await self._fire(on_disconnect, "on_disconnect")
 
     def get_transcription(self):
         """ Returns the latest translation string """
@@ -357,11 +365,11 @@ class TranscriberTranslator:
         """ Logs total token usage and estimated cost for the whole session. """
         cost = (
             self.accumulated_prompt_tokens * self.PROMPT_TOKEN_COST
-            + self.accumulated_candidates_tokens * self.OUTPUT_TOKEN_COST
+            + self.accumulated_output_tokens * self.OUTPUT_TOKEN_COST
         )
         logger.info(
             "Session summary - prompt tokens: %d, output tokens: %d, estimated cost: $%.2f",
             self.accumulated_prompt_tokens,
-            self.accumulated_candidates_tokens,
+            self.accumulated_output_tokens,
             cost
         )

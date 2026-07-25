@@ -23,18 +23,24 @@ CI (`.github/workflows`) runs on push/PR to `dev` only.
 ## Architecture
 - `main.py` - parses CLI args, wires the three components, starts a daemon thread running the
   asyncio loop (`connect_and_run`), polls `get_transcription()` into the display every 50 ms
-  from the Tk event loop, logs a token/cost summary on exit.
+  from the Tk event loop, logs a token/cost summary on exit (registered with both `atexit` and
+  `mac_terminate.on_terminate`, since the two quit paths are different).
 - `module/audio_route.py` - switches the macOS default output to the Multi-Output Device on launch
   (`audio.output_device` in config.json) and restores the previous device on quit, via the
-  `SwitchAudioSource` CLI. Restore is wired two ways in `main.py`: `atexit` (tk backend / Ctrl+C)
-  and an `NSApplicationWillTerminate` observer (the AppKit Quit menu calls `terminate:`, which
-  exits at the C level and skips atexit). No-op if SwitchAudioSource is absent.
-- `module/audio_capturer.py` - `AudioCapturer`: `sd.InputStream` callback pushes 100 ms int16 PCM
-  chunks into a bounded asyncio queue; RMS silence gate with 1 s hangover drops silence so it is
-  not streamed (and billed).
+  `SwitchAudioSource` CLI. No-op if SwitchAudioSource is absent.
+- `module/audio_capturer.py` - `AudioCapturer`: `sd.InputStream` callback pushes int16 PCM chunks
+  of `audio.block_duration_seconds` (50 ms default) into a bounded asyncio queue; RMS silence gate
+  with 1 s hangover drops silence so it is not streamed (and billed). Only devices with input
+  channels are eligible; a stream that fails to open is reported via `.error`, not raised.
 - `module/transcriber.py` - `TranscriberTranslator`: Gemini Live WebSocket (send/receive/clear
   tasks), reconnect loop with exponential backoff that drains stale audio first, sentence
   splitting on punctuation/pauses, token/cost accounting.
+- `module/utility/config.py` - `load_config(path)`: the only place config.json is read. Returns the
+  parsed dict or `{}`; callers merge it over their own defaults.
+- `module/utility/mac_terminate.py` - `on_terminate(fn)`: runs `fn` on
+  `NSApplicationWillTerminateNotification`. The AppKit Quit menu calls `terminate:`, which exits at
+  the C level and skips `atexit`, so anything that must run on quit registers both ways (audio
+  restore and the token/cost summary do). No-op without AppKit.
 - `module/display.py` - `DisplayTranslation`: borderless always-on-top subtitle bar; draggable
   (position persisted to config.json), auto-grows for long lines, right-click menu / Escape to quit.
 - `module/utility/log.py` - `setup_custom_logger('root')` configures the root logger; modules use

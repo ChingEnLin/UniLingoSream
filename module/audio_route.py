@@ -12,6 +12,8 @@ import shutil
 import logging
 import subprocess
 
+from module.utility.mac_terminate import on_terminate
+
 logger = logging.getLogger(__name__)
 
 _BIN = "SwitchAudioSource"
@@ -34,26 +36,12 @@ def current_output():
         return None
 
 
-_observer = None  # keep the notification observer alive for the process lifetime
-
-
 def restore_on_terminate(name):
     """Restore output to `name` when AppKit tears down via NSApp `terminate:`.
 
-    The AppKit overlay's Quit menu calls `terminate:`, which exits at the C level and
-    skips Python's atexit. We register a synchronous observer (queue=None runs it on the
-    posting thread, before exit()) for NSApplicationWillTerminateNotification. No-op if
-    AppKit isn't importable (tk backend / non-macOS), where atexit already suffices.
+    See module.utility.mac_terminate for why atexit alone is not enough.
     """
-    global _observer
-    try:
-        from Foundation import NSNotificationCenter
-        from AppKit import NSApplicationWillTerminateNotification
-    except ImportError:
-        return
-    _observer = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
-        NSApplicationWillTerminateNotification, None, None, lambda note: set_output(name)
-    )
+    return on_terminate(lambda: set_output(name))
 
 
 def set_output(name):

@@ -1,6 +1,7 @@
-""" This module is used to setup the logger for the application. 
+""" This module is used to setup the logger for the application.
 """
 import logging
+
 
 def setup_custom_logger(name):
     """ Setup a custom logger with the specified name. """

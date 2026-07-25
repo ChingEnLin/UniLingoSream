@@ -7,7 +7,6 @@ the Tkinter GUI subtitle display.
 
 import os
 import sys
-import json
 import atexit
 import argparse
 import asyncio
@@ -17,7 +16,8 @@ from dotenv import load_dotenv
 from module import audio_route
 from module.audio_capturer import AudioCapturer
 from module.transcriber import TranscriberTranslator
-from module.utility import log
+from module.utility import log, mac_terminate
+from module.utility.config import load_config
 
 logger = log.setup_custom_logger('root')
 
@@ -27,7 +27,8 @@ load_dotenv()
 # Named constant for polling interval
 POLL_INTERVAL_MS = 50
 
-# Bound the capture queue: ~5s of 100ms chunks. AudioCapturer drops frames when full.
+# Bound the capture queue: 50 chunks of audio.block_duration_seconds (2.5s at the 50ms
+# default). AudioCapturer drops frames when full.
 AUDIO_QUEUE_MAXSIZE = 50
 
 
@@ -41,7 +42,7 @@ def run_async_loop(loop, queue, transcriber, capturer):
         capturer: The AudioCapturer module instance.
     """
     asyncio.set_event_loop(loop)
-    
+
     try:
         # Run the transcriber WebSocket loop with connect/disconnect callbacks for stream warming
         loop.run_until_complete(
@@ -54,8 +55,9 @@ def run_async_loop(loop, queue, transcriber, capturer):
     except Exception as e:
         logger.error("Error in background async event loop: %s", e)
     finally:
-        # Safeguard to ensure capturing is stopped on loop termination
+        # Safeguard to ensure capturing is stopped and released on loop termination
         capturer.stop_stream()
+        capturer.close_stream()
         loop.close()
 
 
@@ -80,12 +82,8 @@ def make_display(backend_override=None, config_path="config.json"):
     AppKit is imported lazily so non-macOS environments (Linux/CI) never load it.
     """
     backend = backend_override
-    if backend is None and os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                backend = json.load(f).get("ui", {}).get("backend")
-        except Exception as e:
-            logger.warning("Could not read ui.backend from %s: %s. Using tk.", config_path, e)
+    if backend is None:
+        backend = load_config(config_path).get("ui", {}).get("backend")
 
     if backend == "appkit":
         try:
@@ -126,9 +124,7 @@ if __name__ == "__main__":
 
     # Point system output at the Multi-Output Device so audio reaches BlackHole for
     # capture, then restore the previous device on exit. No-op without SwitchAudioSource.
-    output_device = json.load(open("config.json", encoding="utf-8")).get(
-        "audio", {}
-    ).get("output_device", "Multi-Output Device") if os.path.exists("config.json") else "Multi-Output Device"
+    output_device = load_config().get("audio", {}).get("output_device", "Multi-Output Device")
     _prev_output = audio_route.current_output()
     if audio_route.set_output(output_device) and _prev_output:
         atexit.register(audio_route.set_output, _prev_output)  # tk backend / Ctrl+C
@@ -149,8 +145,15 @@ if __name__ == "__main__":
     audio_capturer = AudioCapturer(async_loop, audio_queue, device_name=args.device)
     display_translation = make_display(args.backend)
 
-    # Surface silent fallback: default input is the microphone, not system audio
-    if audio_capturer.device_index is None:
+    # The AppKit Quit menu calls terminate:, which exits at the C level and skips atexit,
+    # so the cost summary needs both paths (atexit covers tk and Ctrl+C).
+    atexit.register(transcriber_translator.log_session_summary)
+    mac_terminate.on_terminate(transcriber_translator.log_session_summary)
+
+    # Surface capture problems on the overlay rather than failing silently or in a traceback
+    if audio_capturer.error:
+        display_translation.update_label(f"WARNING: {audio_capturer.error}")
+    elif audio_capturer.device_index is None:
         display_translation.update_label(
             f"WARNING: audio device '{audio_capturer.device_name}' not found - "
             "capturing default input (microphone)"
@@ -158,7 +161,7 @@ if __name__ == "__main__":
 
     # Start background thread for asyncio loop
     t = threading.Thread(
-        target=run_async_loop, 
+        target=run_async_loop,
         args=(async_loop, audio_queue, transcriber_translator, audio_capturer),
         daemon=True
     )
@@ -170,4 +173,3 @@ if __name__ == "__main__":
     # Start Tkinter GUI loop
     logger.info("Starting subtitle display overlay...")
     display_translation.start_gui()
-    transcriber_translator.log_session_summary()

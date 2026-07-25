@@ -1,10 +1,12 @@
 import logging
 import sounddevice as sd
-import json
 import asyncio
 import numpy as np
 
+from module.utility.config import load_config
+
 logger = logging.getLogger(__name__)
+
 
 class AudioCapturer:
     """Captures audio from microphone in raw 16-bit PCM mono format
@@ -22,13 +24,7 @@ class AudioCapturer:
             "block_duration_seconds": 0.05
         }
         if config is None:
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    config = data.get("audio", DEFAULT_CONFIG)
-            except Exception as e:
-                logger.warning("Failed to load config from %s: %s. Using default audio config.", config_path, e)
-                config = DEFAULT_CONFIG
+            config = load_config(config_path).get("audio", DEFAULT_CONFIG)
 
         self.loop = loop
         self.audio_queue = audio_queue
@@ -47,24 +43,41 @@ class AudioCapturer:
 
         # Find device index by name
         self.device_index = self._find_device_index(self.device_name)
-        
-        self.stream = sd.InputStream(
-            callback=self.audio_callback,
-            channels=self.channels,
-            samplerate=self.sample_rate,
-            blocksize=self.blocksize,
-            device=self.device_index,
-            dtype='int16' # Raw 16-bit PCM expected by Gemini
-        )
+
+        # Constructing the stream is the first thing that can fail on a misconfigured
+        # machine. Surface it as a message on the overlay instead of a traceback before
+        # any window exists; main.py renders self.error.
+        self.error = None
+        try:
+            self.stream = sd.InputStream(
+                callback=self.audio_callback,
+                channels=self.channels,
+                samplerate=self.sample_rate,
+                blocksize=self.blocksize,
+                device=self.device_index,
+                dtype='int16',  # Raw 16-bit PCM expected by Gemini
+            )
+        except Exception as e:
+            self.stream = None
+            self.error = f"could not open audio input '{self.device_name}': {e}"
+            logger.error("Could not open audio input stream: %s", e)
 
     def _find_device_index(self, target_name):
-        """Find the index of the audio input device matching target_name."""
+        """Find the index of the audio input device matching target_name.
+
+        Devices with no input channels are skipped: sd.query_devices() lists outputs too,
+        and handing an output-only index to InputStream fails at construction.
+        """
         try:
             devices = sd.query_devices()
             for idx, dev in enumerate(devices):
-                if target_name.lower() in dev["name"].lower():
-                    logger.info("Found target audio device %s at index %d", dev["name"], idx)
-                    return idx
+                if target_name.lower() not in dev["name"].lower():
+                    continue
+                if dev.get("max_input_channels", 0) < 1:
+                    logger.debug("Skipping '%s' at index %d: no input channels", dev["name"], idx)
+                    continue
+                logger.info("Found target audio device %s at index %d", dev["name"], idx)
+                return idx
         except Exception as e:
             logger.warning("Error querying audio devices: %s", e)
         logger.warning("Target device '%s' not found. Using system default input.", target_name)
@@ -97,11 +110,23 @@ class AudioCapturer:
         self.loop.call_soon_threadsafe(self._safe_put, raw_bytes)
 
     def start_stream(self):
-        """Start the audio stream."""
+        """Start the audio stream. No-op if the stream could not be opened."""
+        if self.stream is None:
+            return
         self.stream.start()
         logger.info("Audio stream started.")
 
     def stop_stream(self):
-        """Stop the audio stream."""
+        """Stop the audio stream. No-op if the stream could not be opened."""
+        if self.stream is None:
+            return
         self.stream.stop()
         logger.info("Audio stream stopped.")
+
+    def close_stream(self):
+        """Release the PortAudio stream. Safe to call more than once."""
+        if self.stream is None:
+            return
+        self.stream.close()
+        self.stream = None
+        logger.info("Audio stream closed.")

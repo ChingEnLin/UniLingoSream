@@ -36,6 +36,8 @@ from AppKit import (
 from Foundation import NSObject, NSTimer, NSMakeRect
 from PyObjCTools import AppHelper
 
+from module.utility.config import load_config
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_UI_CONFIG = {
@@ -113,13 +115,8 @@ class DisplayTranslation:
         self.config = DEFAULT_UI_CONFIG.copy()
         if config is not None:
             self.config.update(config)
-        elif os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    file_config = json.load(f)
-                self.config.update(file_config.get("ui", {}))
-            except Exception as e:
-                logger.error("Error loading %s: %s. Using defaults.", config_path, e)
+        else:
+            self.config.update(load_config(config_path).get("ui", {}))
 
         app = NSApplication.sharedApplication()  # must exist before any window
         # Accessory policy (no dock icon) must be set BEFORE creating the status item,
@@ -148,7 +145,7 @@ class DisplayTranslation:
         self.panel.setHasShadow_(False)
         self.panel.setIgnoresMouseEvents_(bool(self.config["click_through"]))
         # ponytail: drag by background instead of subclassing NSView for mouseDragged.
-        # Position persistence skipped in the prototype; add on <window moved> if this ships.
+        # Position is persisted when the bar is locked again (see _Controller.toggleMove_).
         self.panel.setMovableByWindowBackground_(not self.config["click_through"])
 
         # Rounded translucent background layer
