@@ -54,6 +54,9 @@ class TranscriberTranslator:
             self.api_config["sentence_pause_seconds"] = kwargs["sentence_pause_seconds"]
         if "idle_reset_seconds" in kwargs:
             self.api_config["idle_reset_seconds"] = kwargs["idle_reset_seconds"]
+        if kwargs.get("context_file"):
+            self.api_config["context_file"] = kwargs["context_file"]
+        self._load_context_file()
 
         self.client = genai.Client()
         self.model_id = self.api_config.get("model", "gemini-3.5-live-translate-preview")
@@ -69,6 +72,20 @@ class TranscriberTranslator:
         self.accumulated_candidates_tokens = 0
         self.current_conn_prompt_tokens = 0
         self.current_conn_candidates_tokens = 0
+
+    def _load_context_file(self):
+        """ If api.context_file is set, load {context, glossary} from it (file wins over inline). """
+        path = (self.api_config.get("context_file") or "").strip()
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.api_config["context"] = data.get("context", "")
+            self.api_config["glossary"] = data.get("glossary", {})
+            logger.info("Loaded translation context from %s", path)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Failed to load context_file %s (%s). Ignoring.", path, e)
 
     def _build_system_instruction(self):
         """ Builds a system_instruction from config `context` + `glossary`, or None.

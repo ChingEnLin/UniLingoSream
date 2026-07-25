@@ -66,6 +66,19 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             t.get_connect_config().system_instruction.parts[0].text, instr)
 
+    @patch("builtins.open", new_callable=unittest.mock.mock_open,
+           read_data='{"context": "Show ctx", "glossary": {"A": "甲"}}')
+    def test_context_file_loads(self, _mock_file):
+        """ context_file populates context/glossary (file wins over inline) """
+        t = TranscriberTranslator(config_path="dummy.json", context_file="show.json")
+        self.assertEqual(t.api_config["context"], "Show ctx")
+        self.assertEqual(t.api_config["glossary"], {"A": "甲"})
+
+    def test_context_file_missing_is_ignored(self):
+        """ A missing context_file is ignored, not fatal (setUp makes open raise) """
+        t = TranscriberTranslator(config_path="dummy.json", context_file="/no/such.json")
+        self.assertIsNone(t._build_system_instruction())
+
     def test_extract_text_from_model_turn(self):
         """ TEXT modality: text arrives in model_turn parts """
         content = MagicMock()

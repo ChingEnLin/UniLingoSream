@@ -2,6 +2,7 @@
   "api": {
     "model": "gemini-3.5-live-translate-preview",
     "target_language": "zh-TW",
+    "context_file": "contexts/kyousuki.json",
     "context": "",
     "glossary": {},
     "subtitle_timeout_seconds": 4.0,
@@ -28,7 +29,7 @@
     "bottom_margin": 100,
     "always_on_top": true,
     "draggable": true,
-    "window_x": 1833,
-    "window_y": 1004
+    "window_x": 1791,
+    "window_y": 1006
   }
 }

@@ -105,6 +105,7 @@ def parse_args(argv=None):
     """Parses CLI overrides. Unknown args are ignored so test runners' argv doesn't break."""
     parser = argparse.ArgumentParser(description="Real-time translation subtitle overlay")
     parser.add_argument("--target", help="Target language code override, e.g. en-US")
+    parser.add_argument("--context", help="Path to a JSON file with {context, glossary} to load")
     parser.add_argument("--device", help="Audio input device name substring override")
     parser.add_argument("--backend", choices=["tk", "appkit"], help="Overlay backend override")
     parser.add_argument("--list-devices", action="store_true", help="Print audio devices and exit")
@@ -142,6 +143,8 @@ if __name__ == "__main__":
     overrides = {}
     if args.target:
         overrides["target_language"] = args.target
+    if args.context:
+        overrides["context_file"] = args.context
     transcriber_translator = TranscriberTranslator(**overrides)
     audio_capturer = AudioCapturer(async_loop, audio_queue, device_name=args.device)
     display_translation = make_display(args.backend)

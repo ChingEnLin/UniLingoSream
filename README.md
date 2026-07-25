@@ -79,6 +79,7 @@ You can customize the application behavior by modifying config.json. The support
 - api: Configures the Gemini model, source/target languages, and phrase splitting settings.
   - context: Optional free-text domain background (e.g. show synopsis, tone) fed to the model to bias translations. Leave `""` to disable.
   - glossary: Optional `{ "term": "preferred translation" }` map; the model honors these for terms that appear in the audio. Leave `{}` to disable.
+  - context_file: Optional path to a JSON file holding `{ "context": ..., "glossary": {...} }` (see `contexts/`); when set it overrides the inline `context`/`glossary`. Swap shows without editing config by passing `--context contexts/<show>.json` on the command line.
 - audio: Configures the virtual device name, sample rate, and channels.
 - ui: Configures font family, font size, colors, window coordinates, opacity, and window level attributes.
 
