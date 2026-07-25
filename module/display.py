@@ -130,7 +130,10 @@ class DisplayTranslation:
         self.root.update_idletasks()
         needed = self.label.winfo_reqheight() + 20
         base = self.config["window_height"]
-        height = max(base, min(needed, base * 3))
+        # ponytail: cap on a share of the screen, not on window_height * 3 - that base is a
+        # single-line height for the default font, so a large font_size clipped wrapped lines.
+        cap = int(self.root.winfo_screenheight() * 0.4)
+        height = max(base, min(needed, cap))
         if height != self.root.winfo_height():
             y = self.root.winfo_y() + self.root.winfo_height() - height
             self.root.geometry(f"{self.root.winfo_width()}x{height}+{self.root.winfo_x()}+{y}")

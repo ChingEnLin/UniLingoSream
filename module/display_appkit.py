@@ -276,7 +276,10 @@ class DisplayTranslation:
         bounds = NSMakeRect(0, 0, self._width - 40, 10000)
         needed = int(self.field.cell().cellSizeForBounds_(bounds).height) + 20
         base = self.config["window_height"]
-        height = max(base, min(needed, base * 3))
+        # ponytail: cap on a share of the screen, not on window_height * 3 - that base is a
+        # single-line height for the default font, so a large font_size clipped wrapped lines.
+        cap = int(NSScreen.mainScreen().frame().size.height * 0.4)
+        height = max(base, min(needed, cap))
         frame = self.panel.frame()
         if int(frame.size.height) != height:
             # bottom-left origin: keep origin.y fixed and the window grows upward
@@ -323,6 +326,17 @@ def _selfcheck():
     assert d2._font_size == 96, "font size not clamped to max"
     d2.set_font_size(1)
     assert d2._font_size == 12, "font size not clamped to min"
+
+    # A wrapped line must never render outside the text field (the base*3 cap clipped
+    # the third line once font_size grew past window_height / 3).
+    d3 = DisplayTranslation(config={"font_size": 57, "window_height": 70})
+    d3.update_label("這是一段很長的字幕測試文字，用來確認字幕列會不會長到三行，"
+                    "並且第三行是不是會被裁掉看不到，這樣才能重現使用者報告的問題。")
+    text_h = d3.field.cell().cellSizeForBounds_(
+        NSMakeRect(0, 0, d3._width - 40, 10000)
+    ).height
+    assert d3.field.frame().size.height >= text_h, \
+        f"text ({text_h}) clipped by field ({d3.field.frame().size.height})"
     os.remove(tmp)
     print("display_appkit self-check passed")
 
