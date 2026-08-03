@@ -2,7 +2,7 @@
   "api": {
     "model": "gemini-3.5-live-translate-preview",
     "target_language": "zh-TW",
-    "context_file": "contexts/kyousuki.json",
+    "context_file": "contexts/youtube_shinrei_kenshou.json",
     "subtitle_timeout_seconds": 4.0,
     "sentence_pause_seconds": 1.5,
     "idle_reset_seconds": 30.0
@@ -27,7 +27,8 @@
     "bottom_margin": 100,
     "always_on_top": true,
     "draggable": true,
-    "window_x": 1791,
-    "window_y": 1006
+    "grow_up": false,
+    "window_x": 1856,
+    "window_y": 973
   }
 }

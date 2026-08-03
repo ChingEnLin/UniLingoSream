@@ -19,7 +19,8 @@ DEFAULT_UI_CONFIG = {
     "window_width_percent": 80,
     "bottom_margin": 100,
     "always_on_top": True,
-    "draggable": True
+    "draggable": True,
+    "grow_up": True  # False: anchor the top edge, so a bar near the top grows downward
 }
 
 
@@ -119,7 +120,8 @@ class DisplayTranslation:
             logger.warning("Could not persist window position: %s", e)
 
     def update_label(self, text):
-        """ Updates the label and resizes the window to fit, bottom edge anchored. """
+        """ Updates the label and resizes the window to fit, anchoring the bottom edge
+        (ui.grow_up, default) or the top edge (grow_up false, for a bar at the screen top). """
         self.label.config(text=text)
         self.root.update_idletasks()
         needed = self.label.winfo_reqheight() + 20
@@ -129,7 +131,10 @@ class DisplayTranslation:
         cap = int(self.root.winfo_screenheight() * 0.4)
         height = max(base, min(needed, cap))
         if height != self.root.winfo_height():
-            y = self.root.winfo_y() + self.root.winfo_height() - height
+            # top-left origin: shifting y up keeps the bottom edge; leaving y grows downward.
+            y = self.root.winfo_y()
+            if self.config["grow_up"]:
+                y += self.root.winfo_height() - height
             self.root.geometry(f"{self.root.winfo_width()}x{height}+{self.root.winfo_x()}+{y}")
 
     def start_gui(self):

@@ -51,6 +51,7 @@ DEFAULT_UI_CONFIG = {
     "bottom_margin": 100,
     "always_on_top": True,
     "click_through": True,   # the whole point of moving off Tk; set False to drag the bar
+    "grow_up": True,         # False: anchor the top edge, so a bar near the top grows downward
 }
 
 
@@ -268,7 +269,8 @@ class DisplayTranslation:
         })
 
     def update_label(self, text):
-        """ Set text and grow height to fit, keeping the bottom edge anchored. """
+        """ Set text and grow height to fit, anchoring the bottom edge (ui.grow_up, default)
+        or the top edge (grow_up false, for a bar parked at the top of the screen). """
         self.field.setStringValue_(text)
         bounds = NSMakeRect(0, 0, self._width - 40, 10000)
         needed = int(self.field.cell().cellSizeForBounds_(bounds).height) + 20
@@ -279,9 +281,13 @@ class DisplayTranslation:
         height = max(base, min(needed, cap))
         frame = self.panel.frame()
         if int(frame.size.height) != height:
-            # bottom-left origin: keep origin.y fixed and the window grows upward
+            # bottom-left origin: keeping origin.y grows upward, keeping the top edge
+            # (origin.y + size.height) grows downward - the useful one near the screen top.
+            y = frame.origin.y
+            if not self.config["grow_up"]:
+                y += frame.size.height - height
             self.panel.setFrame_display_(
-                NSMakeRect(frame.origin.x, frame.origin.y, self._width, height), True
+                NSMakeRect(frame.origin.x, y, self._width, height), True
             )
             self.field.setFrame_(NSMakeRect(20, 10, self._width - 40, height - 20))
 
@@ -334,6 +340,17 @@ def _selfcheck():
     ).height
     assert d3.field.frame().size.height >= text_h, \
         f"text ({text_h}) clipped by field ({d3.field.frame().size.height})"
+
+    # grow_up=False must hold the top edge still and extend downward instead.
+    d4 = DisplayTranslation(config={"font_size": 57, "window_height": 70, "grow_up": False})
+    before = d4.panel.frame()
+    top = before.origin.y + before.size.height
+    d4.update_label("這是一段很長的字幕測試文字，用來確認字幕列會不會往下長而不是往上長，"
+                    "放在畫面上方時才不會蓋掉上面的內容。")
+    after = d4.panel.frame()
+    assert after.size.height > before.size.height, "window did not grow at all"
+    assert abs((after.origin.y + after.size.height) - top) < 1, \
+        "top edge moved: window grew upward despite grow_up=False"
     os.remove(tmp)
     print("display_appkit self-check passed")
 
