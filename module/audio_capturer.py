@@ -1,3 +1,4 @@
+import collections
 import logging
 import sounddevice as sd
 import asyncio
@@ -13,7 +14,17 @@ class AudioCapturer:
     and pushes it thread-safely to an asyncio queue.
     """
     BLOCK_DURATION_SEC = 0.05
-    HANGOVER_SEC = 1.0
+    # Trailing silence kept after speech so word tails are not clipped. Every second of it
+    # is billed, so it is short and configurable; 1.0s used to cost a second per utterance.
+    HANGOVER_SEC = 0.4
+    # Adaptive gate: the noise floor is the 10th percentile of recent block RMS (the gaps
+    # between words). Speech has to beat it by MARGIN, but the gate can never rise above
+    # CAP x the configured threshold, or a loud passage would mute the subtitles entirely.
+    NOISE_WINDOW_SEC = 10.0
+    ADAPTIVE_PERCENTILE = 10
+    ADAPTIVE_MARGIN = 2.0
+    ADAPTIVE_CAP = 3.0
+    DUTY_LOG_SEC = 60.0
 
     def __init__(self, loop, audio_queue: asyncio.Queue, config_path="config.json", config=None, device_name=None):
         DEFAULT_CONFIG = {
@@ -38,8 +49,19 @@ class AudioCapturer:
 
         # ponytail: RMS silence gate; threshold is a calibration knob in config.json (int16 units)
         self.silence_rms_threshold = config.get("silence_rms_threshold", DEFAULT_CONFIG["silence_rms_threshold"])
-        self._hangover_blocks = int(self.HANGOVER_SEC / self.block_duration_sec)
+        self.hangover_sec = config.get("hangover_seconds", self.HANGOVER_SEC)
+        self._hangover_blocks = int(self.hangover_sec / self.block_duration_sec)
         self._silent_block_count = self._hangover_blocks  # start gated until first speech
+
+        # Adaptive gate: a fixed threshold never closes over content with music or room
+        # tone above it, so the stream (and the bill) runs at 100% duty cycle.
+        self.adaptive_gate = config.get("adaptive_gate", True)
+        self._rms_window = collections.deque(
+            maxlen=max(1, int(self.NOISE_WINDOW_SEC / self.block_duration_sec))
+        )
+        self._blocks_seen = 0
+        self._blocks_sent = 0
+        self._duty_log_blocks = max(1, int(self.DUTY_LOG_SEC / self.block_duration_sec))
 
         # Find device index by name
         self.device_index = self._find_device_index(self.device_name)
@@ -90,6 +112,33 @@ class AudioCapturer:
         except asyncio.QueueFull:
             logger.warning("Audio queue is full, dropping frame.")
 
+    def _gate_threshold(self):
+        """Effective RMS gate: the configured floor, raised toward the measured noise floor.
+
+        Only raises, never lowers, and only once the window has filled - a quiet source
+        keeps the configured threshold, a loud one stops being streamed continuously.
+        """
+        if not self.adaptive_gate or len(self._rms_window) < self._rms_window.maxlen:
+            return self.silence_rms_threshold
+        floor = float(np.percentile(self._rms_window, self.ADAPTIVE_PERCENTILE))
+        return min(
+            max(self.silence_rms_threshold, floor * self.ADAPTIVE_MARGIN),
+            self.silence_rms_threshold * self.ADAPTIVE_CAP,
+        )
+
+    def _log_duty_cycle(self, threshold):
+        """Every DUTY_LOG_SEC, report the share of audio actually billed."""
+        self._blocks_seen += 1
+        if self._blocks_seen < self._duty_log_blocks:
+            return
+        logger.info(
+            "Silence gate: streamed %.0f%% of the last %.0fs (threshold %.0f, configured %d)",
+            100.0 * self._blocks_sent / self._blocks_seen, self.DUTY_LOG_SEC,
+            threshold, self.silence_rms_threshold
+        )
+        self._blocks_seen = 0
+        self._blocks_sent = 0
+
     def audio_callback(self, indata, frames, time, status):
         """Callback function called by sounddevice for each block of input audio.
 
@@ -98,12 +147,16 @@ class AudioCapturer:
         if status:
             logger.warning("Audio status warning: %s", status)
         rms = np.sqrt(np.mean(indata.astype(np.float64) ** 2))
-        if rms < self.silence_rms_threshold:
+        self._rms_window.append(rms)
+        threshold = self._gate_threshold()
+        self._log_duty_cycle(threshold)
+        if rms < threshold:
             self._silent_block_count += 1
             if self._silent_block_count > self._hangover_blocks:
                 return
         else:
             self._silent_block_count = 0
+        self._blocks_sent += 1
         # Convert captured numpy array to raw bytes
         raw_bytes = indata.tobytes()
         # Thread-safely push raw bytes to the asyncio queue

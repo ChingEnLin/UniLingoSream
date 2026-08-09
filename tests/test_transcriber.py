@@ -386,7 +386,15 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
             self.assertIn(1.0, sleep_calls)  # reconnect backoff sleep
 
     async def test_token_usage_accumulation(self):
-        """ Test that token usage is accumulated and deltas are calculated correctly """
+        """ Usage counts arrive PER MESSAGE and must be summed.
+
+        Measured against gemini-3.5-live-translate-preview: 13.7s of speech produced 12
+        flat (prompt=25, response=25) messages, one per second, never climbing. Treating
+        them as cumulative and booking max(0, new - previous) reported the first message
+        and nothing else, so every session summarised as a few dozen tokens.
+        The second message here is deliberately larger than the first: under the old delta
+        logic that still passes, which is why the flat case below is the one that matters.
+        """
         translator = TranscriberTranslator(config_path="dummy.json")
         mock_session = MagicMock()
         translator.session = mock_session
@@ -415,14 +423,25 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
         loop_task = asyncio.create_task(translator.receive_translation_loop())
         await asyncio.sleep(0.05)
 
-        self.assertEqual(translator.accumulated_prompt_tokens, 150)
-        self.assertEqual(translator.accumulated_output_tokens, 25)
+        self.assertEqual(translator.accumulated_prompt_tokens, 250)
+        self.assertEqual(translator.accumulated_output_tokens, 35)
 
         loop_task.cancel()
         try:
             await loop_task
         except asyncio.CancelledError:
             pass
+
+    def test_flat_usage_messages_are_summed_not_differenced(self):
+        """ The shape the API actually sends: one flat (25, 25) message per second of audio.
+        Delta-from-previous accounting books 25 and then zero forever; this must total. """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        for _ in range(12):
+            translator._account_tokens(
+                types.UsageMetadata(prompt_token_count=25, response_token_count=25)
+            )
+        self.assertEqual(translator.accumulated_prompt_tokens, 300)
+        self.assertEqual(translator.accumulated_output_tokens, 300)
 
     async def test_thought_tokens_billed_as_output(self):
         """ thoughts_token_count bills at the output rate and is reported separately from

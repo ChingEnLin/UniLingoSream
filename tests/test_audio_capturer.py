@@ -157,6 +157,48 @@ class TestAudioCapturer(unittest.TestCase):
         self.audio_capturer.audio_callback(silent, 1600, None, None)
         self.assertEqual(self.loop.call_soon_threadsafe.call_count, count_after_hangover)
 
+    def _feed(self, amplitude, count):
+        """ Push `count` blocks of constant amplitude through the gate (RMS == amplitude). """
+        block = np.full((1600, 1), amplitude, dtype=np.int16)
+        for _ in range(count):
+            self.audio_capturer.audio_callback(block, 1600, None, None)
+
+    def test_hangover_seconds_is_configurable(self):
+        """ Every second of trailing silence is billed, so the hangover is a knob. """
+        with patch('builtins.open'):
+            capturer = AudioCapturer(self.loop, self.audio_queue,
+                                     config={"hangover_seconds": 0.2, "block_duration_seconds": 0.05})
+        self.assertEqual(capturer._hangover_blocks, 4)
+        self.assertEqual(self.audio_capturer._hangover_blocks, 8)  # 0.4s default
+
+    def test_adaptive_gate_closes_over_a_loud_noise_floor(self):
+        """ A fixed threshold never closes on content whose noise floor sits above it, so the
+        stream - and the bill - runs at 100% duty cycle. The gate has to follow the floor. """
+        self._feed(500, self.audio_capturer._rms_window.maxlen)  # 500 > configured 300
+        self.assertEqual(self.audio_capturer._gate_threshold(), 900)  # floor 500 x 2, capped
+        streamed_before = self.loop.call_soon_threadsafe.call_count
+
+        extra = self.audio_capturer._hangover_blocks + 2
+        self._feed(500, extra)
+        self.assertLess(self.loop.call_soon_threadsafe.call_count - streamed_before, extra)
+
+    def test_adaptive_gate_cap_keeps_speech_streaming(self):
+        """ The cap is what stops a loud passage from muting the subtitles altogether. """
+        self._feed(5000, self.audio_capturer._rms_window.maxlen)
+        self.assertEqual(self.audio_capturer._gate_threshold(), 900)  # not 5000 x 2
+        before = self.loop.call_soon_threadsafe.call_count
+        self._feed(1000, 3)
+        self.assertEqual(self.loop.call_soon_threadsafe.call_count, before + 3)
+
+    def test_duty_cycle_is_logged(self):
+        """ Cost is the share of audio streamed, so it has to be visible while running. """
+        self.audio_capturer._duty_log_blocks = 10
+        with patch('module.audio_capturer.logger.info') as mock_info:
+            self._feed(1000, 5)
+            self._feed(0, 5)
+            mock_info.assert_called_once()
+            self.assertIn("Silence gate", mock_info.call_args[0][0])
+
     def test_safe_put_success(self):
         """ Test _safe_put successfully puts data in the queue """
         raw_bytes = b'\x01\x02'

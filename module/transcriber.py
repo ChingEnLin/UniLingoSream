@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import threading
+import time
 from google import genai
 from google.genai import types
 
@@ -20,17 +21,24 @@ class ContextSwitch(Exception):
 
 class TranscriberTranslator:
     """ Transcriber module for transcribing and translating audio data using Gemini Live Client """
-    # Gemini 3.5 Live pricing per token: $3.50/1M input, $21.00/1M output
+    # Gemini 3.5 Live pricing per token: $3.50/1M input, $21.00/1M output.
+    # Both halves scale with seconds of audio streamed, not with how much text comes back:
+    # a probe measured ~25 prompt and ~25 response tokens per second of stream, and
+    # response_tokens_details reports them as AUDIO modality even under TEXT response
+    # modality (the subtitles arrive via output_transcription). So the only lever on cost
+    # is the silence gate's duty cycle. Rates are unverified against current pricing.
     PROMPT_TOKEN_COST = 0.0000035
     OUTPUT_TOKEN_COST = 0.000021
     SENTENCE_ENDERS = ("。", "？", "！", ".", "?", "!", "\n")
     # The overlay lays text out from the top and clips what overflows its height cap, so an
     # unbounded turn loses its tail - the newest words. Cap the head instead.
     MAX_TURN_CHARS = 200
-    # How many usage_metadata messages to log at INFO. Open question: whether the counts are
-    # cumulative per connection or per message. One run answers it - a monotonic climb across
-    # these lines means cumulative (what _account_tokens assumes).
+    # How many usage_metadata messages to log at INFO at the start of a run. The question they
+    # were added to answer is settled (see _account_tokens); they stay as a sanity check that a
+    # model change has not changed the reporting shape again.
     USAGE_LOG_COUNT = 20
+    # How often to log a running cost total. The exit summary is too late to tune against.
+    COST_LOG_INTERVAL_SEC = 60.0
 
     def __init__(self, config_path="config.json", **kwargs):
         self.full_config = load_config(config_path)
@@ -87,9 +95,8 @@ class TranscriberTranslator:
         self.last_sent_time = 0.0
         self.accumulated_prompt_tokens = 0
         self.accumulated_output_tokens = 0
-        self.current_conn_prompt_tokens = 0
-        self.current_conn_output_tokens = 0
         self._usage_logs_left = self.USAGE_LOG_COUNT
+        self._session_start = time.monotonic()
         # Set from the GUI thread (menu), read by context_switch_loop on the asyncio thread.
         self._switch_flag = threading.Event()
 
@@ -199,6 +206,12 @@ class TranscriberTranslator:
         The Live API's UsageMetadata names the output field `response_token_count`; it has
         no `candidates_token_count` (extra="forbid"), so reading that name silently
         reported zero output tokens - the half that costs 6x the input rate.
+
+        These counts are PER MESSAGE, not cumulative per connection. A 13.7s probe against
+        gemini-3.5-live-translate-preview returned 12 flat (prompt=25, response=25) messages,
+        one per second of audio - never climbing. The old delta-from-previous logic booked
+        the first message and then max(0, 25 - 25) = 0 forever, so any session of any length
+        summarised as ~50 tokens. Sum them instead.
         """
         prompt_tokens = getattr(metadata, "prompt_token_count", 0) or 0
         response_tokens = getattr(metadata, "response_token_count", 0) or 0
@@ -211,9 +224,6 @@ class TranscriberTranslator:
             return
         output_tokens = response_tokens + thought_tokens
 
-        # ponytail: assumes the counts are cumulative per connection. The first
-        # USAGE_LOG_COUNT messages are logged at INFO - if the numbers turn out to be
-        # per-message, drop the delta and add the values straight in.
         if self._usage_logs_left > 0:
             self._usage_logs_left -= 1
             logger.info(
@@ -223,10 +233,8 @@ class TranscriberTranslator:
                 getattr(metadata, "total_token_count", None)
             )
         logger.debug("usage_metadata: %s", metadata)
-        self.accumulated_prompt_tokens += max(0, prompt_tokens - self.current_conn_prompt_tokens)
-        self.accumulated_output_tokens += max(0, output_tokens - self.current_conn_output_tokens)
-        self.current_conn_prompt_tokens = prompt_tokens
-        self.current_conn_output_tokens = output_tokens
+        self.accumulated_prompt_tokens += prompt_tokens
+        self.accumulated_output_tokens += output_tokens
 
     def _append_translation(self, text):
         """ Append a text chunk to the subtitle currently on screen, splitting turns.
@@ -380,8 +388,9 @@ class TranscriberTranslator:
                     clear_task = asyncio.create_task(self.clear_subtitle_timeout_loop())
 
                     switch_task = asyncio.create_task(self.context_switch_loop())
+                    cost_task = asyncio.create_task(self.cost_log_loop())
 
-                    tasks = [send_task, receive_task, clear_task, switch_task]
+                    tasks = [send_task, receive_task, clear_task, switch_task, cost_task]
                     if self.idle_reset_seconds > 0:
                         idle_task = asyncio.create_task(self.idle_monitor_loop())
                         tasks.append(idle_task)
@@ -415,8 +424,6 @@ class TranscriberTranslator:
                 delay = min(delay * factor, max_delay)
             finally:
                 self.session = None
-                self.current_conn_prompt_tokens = 0
-                self.current_conn_output_tokens = 0
                 await self._fire(on_disconnect, "on_disconnect")
 
             # Sleep only after `finally` has stopped the capture stream. Sleeping inside
@@ -429,15 +436,28 @@ class TranscriberTranslator:
         """ Returns the latest translation string """
         return self.latest_translation
 
-    def log_session_summary(self):
-        """ Logs total token usage and estimated cost for the whole session. """
+    def log_session_summary(self, label="Session summary"):
+        """ Logs token usage, estimated cost, and the burn rate that makes it actionable. """
         cost = (
             self.accumulated_prompt_tokens * self.PROMPT_TOKEN_COST
             + self.accumulated_output_tokens * self.OUTPUT_TOKEN_COST
         )
+        elapsed = max(time.monotonic() - self._session_start, 1.0)
         logger.info(
-            "Session summary - prompt tokens: %d, output tokens: %d, estimated cost: $%.2f",
+            "%s - prompt tokens: %d, output tokens: %d, estimated cost: $%.4f ($%.2f/hr over %.1f min)",
+            label,
             self.accumulated_prompt_tokens,
             self.accumulated_output_tokens,
-            cost
+            cost,
+            cost * 3600.0 / elapsed,
+            elapsed / 60.0,
         )
+
+    async def cost_log_loop(self):
+        """ Running cost while the session is live; the exit summary lands too late to tune on. """
+        try:
+            while True:
+                await asyncio.sleep(self.COST_LOG_INTERVAL_SEC)
+                self.log_session_summary("Running total")
+        except asyncio.CancelledError:
+            pass
