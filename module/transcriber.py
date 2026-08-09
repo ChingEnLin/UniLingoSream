@@ -21,12 +21,13 @@ class ContextSwitch(Exception):
 
 class TranscriberTranslator:
     """ Transcriber module for transcribing and translating audio data using Gemini Live Client """
-    # Gemini 3.5 Live pricing per token: $3.50/1M input, $21.00/1M output.
-    # Both halves scale with seconds of audio streamed, not with how much text comes back:
-    # a probe measured ~25 prompt and ~25 response tokens per second of stream, and
-    # response_tokens_details reports them as AUDIO modality even under TEXT response
-    # modality (the subtitles arrive via output_transcription). So the only lever on cost
-    # is the silence gate's duty cycle. Rates are unverified against current pricing.
+    # gemini-3.5-live-translate-preview, audio rates, checked against
+    # ai.google.dev/gemini-api/docs/pricing on 2026-08-09: $3.50/1M in, $21.00/1M out
+    # (output includes thinking tokens). The model is priced for audio only - both halves
+    # bill at 25 tokens per second of audio, which a probe confirmed end to end, and
+    # response_tokens_details reports AUDIO modality even under TEXT response modality
+    # (subtitles arrive via output_transcription). So cost is purely a function of how
+    # many seconds get past the silence gate: ~$0.037/min, ~$2.21/hr, at 100% duty cycle.
     PROMPT_TOKEN_COST = 0.0000035
     OUTPUT_TOKEN_COST = 0.000021
     SENTENCE_ENDERS = ("。", "？", "！", ".", "?", "!", "\n")
