@@ -2,7 +2,7 @@
   "api": {
     "model": "gemini-3.5-live-translate-preview",
     "target_language": "zh-TW",
-    "context_file": "contexts/kyousuki.json",
+    "context_file": "contexts/youtube_shinrei_kenshou.json",
     "subtitle_timeout_seconds": 4.0,
     "sentence_pause_seconds": 1.5,
     "idle_reset_seconds": 30.0
@@ -13,14 +13,12 @@
     "sample_rate": 16000,
     "channels": 1,
     "silence_rms_threshold": 300,
-    "adaptive_gate": true,
-    "hangover_seconds": 0.4,
     "block_duration_seconds": 0.05
   },
   "ui": {
     "backend": "appkit",
     "font_family": "Helvetica",
-    "font_size": 50,
+    "font_size": 57,
     "text_color": "#FFFFFF",
     "bg_color": "#000000",
     "bg_opacity": 0.6,
@@ -29,8 +27,8 @@
     "bottom_margin": 100,
     "always_on_top": true,
     "draggable": true,
-    "grow_up": true,
-    "window_x": -1728,
-    "window_y": 822
+    "grow_up": false,
+    "window_x": 1856,
+    "window_y": 973
   }
 }
