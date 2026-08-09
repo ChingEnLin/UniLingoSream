@@ -1,12 +1,21 @@
 import asyncio
 import logging
 import json
+import threading
 from google import genai
 from google.genai import types
 
 from module.utility.config import load_config
 
 logger = logging.getLogger(__name__)
+
+
+class ContextSwitch(Exception):
+    """ Raised inside the session tasks to drop the socket and reconnect with a new context.
+
+    system_instruction is fixed for the life of a Live connection, so switching context
+    means reconnecting - not an error, so it skips the backoff.
+    """
 
 
 class TranscriberTranslator:
@@ -81,6 +90,29 @@ class TranscriberTranslator:
         self.current_conn_prompt_tokens = 0
         self.current_conn_output_tokens = 0
         self._usage_logs_left = self.USAGE_LOG_COUNT
+        # Set from the GUI thread (menu), read by context_switch_loop on the asyncio thread.
+        self._switch_flag = threading.Event()
+
+    def set_context_file(self, path):
+        """ Switch the translation context while running; "" means no context at all.
+
+        Applies on the next connection, and asks for one immediately.
+        """
+        self.api_config["context_file"] = path
+        self.api_config["context"] = ""
+        self.api_config["glossary"] = {}
+        self._load_context_file()
+        self._switch_flag.set()
+
+    async def context_switch_loop(self):
+        """ Drops the session once set_context_file() asks for a different context. """
+        try:
+            while True:
+                await asyncio.sleep(0.3)
+                if self._switch_flag.is_set():
+                    raise ContextSwitch(self.api_config.get("context_file") or "none")
+        except asyncio.CancelledError:
+            pass
 
     def _load_context_file(self):
         """ If api.context_file is set, load {context, glossary} from it (file wins over inline). """
@@ -300,14 +332,18 @@ class TranscriberTranslator:
 
     async def connect_and_run(self, audio_queue: asyncio.Queue, on_connect=None, on_disconnect=None):
         """ Establishes connection and handles reconnect loops with exponential backoff """
-        connect_config = self.get_connect_config()
-
         initial_delay = 1.0
         max_delay = 60.0
         factor = 2.0
         delay = initial_delay
 
         while True:
+            # Clear before building, so a switch racing this attempt reconnects rather than
+            # being dropped. Built per attempt: the config used to be built once, before the
+            # loop, which pinned the system_instruction for the whole run.
+            self._switch_flag.clear()
+            connect_config = self.get_connect_config()
+
             # Drop audio buffered while disconnected; translating it would show stale subtitles
             while not audio_queue.empty():
                 audio_queue.get_nowait()
@@ -343,7 +379,9 @@ class TranscriberTranslator:
                     receive_task = asyncio.create_task(self.receive_translation_loop())
                     clear_task = asyncio.create_task(self.clear_subtitle_timeout_loop())
 
-                    tasks = [send_task, receive_task, clear_task]
+                    switch_task = asyncio.create_task(self.context_switch_loop())
+
+                    tasks = [send_task, receive_task, clear_task, switch_task]
                     if self.idle_reset_seconds > 0:
                         idle_task = asyncio.create_task(self.idle_monitor_loop())
                         tasks.append(idle_task)
@@ -367,6 +405,9 @@ class TranscriberTranslator:
                             task.result()
                         except asyncio.CancelledError:
                             pass
+            except ContextSwitch as e:
+                logger.info("Context switched to %s. Reconnecting...", e)
+                self.latest_translation = "Switching context..."
             except Exception as e:
                 logger.error("Session disconnect or connection error: %s. Reconnecting in %.1fs...", e, delay)
                 self.latest_translation = f"Reconnecting ({type(e).__name__})..."

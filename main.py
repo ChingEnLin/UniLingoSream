@@ -144,6 +144,8 @@ if __name__ == "__main__":
     transcriber_translator = TranscriberTranslator(**overrides)
     audio_capturer = AudioCapturer(async_loop, audio_queue, device_name=args.device)
     display_translation = make_display(args.backend)
+    # Lets the menu-bar Context submenu switch context without restarting (appkit backend).
+    display_translation.on_context_change = transcriber_translator.set_context_file
 
     # The AppKit Quit menu calls terminate:, which exits at the C level and skips atexit,
     # so the cost summary needs both paths (atexit covers tk and Ctrl+C).

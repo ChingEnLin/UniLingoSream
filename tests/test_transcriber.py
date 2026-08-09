@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from google.genai import types
-from module.transcriber import TranscriberTranslator
+from module.transcriber import ContextSwitch, TranscriberTranslator
 
 
 class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
@@ -538,6 +538,43 @@ class TestTranscriberTranslator(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Reconnecting", translator.latest_translation)
         self.assertIn("ValueError", translator.latest_translation)
+
+    @patch("builtins.open", new_callable=unittest.mock.mock_open,
+           read_data='{"context": "Space opera.", "glossary": {"Ship": "船"}}')
+    async def test_context_switch_reconnects_with_new_instruction(self, _mock_file):
+        """ Switching context mid-run: the live session is dropped, and the next connect
+        carries the new system_instruction (the config used to be built once, before the
+        reconnect loop, so a switch never reached the API). """
+        translator = TranscriberTranslator(config_path="dummy.json")
+        self.assertIsNone(translator.get_connect_config().system_instruction)
+
+        configs = []
+        real_sleep = asyncio.sleep
+
+        def fake_connect(model=None, config=None):
+            configs.append(config)
+            if len(configs) == 1:
+                translator.set_context_file("contexts/space.json")  # user picks it from the menu
+            raise RuntimeError("boom")
+
+        async def stop_after_two(_delay):
+            if len(configs) >= 2:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        translator.client.aio.live.connect = MagicMock(side_effect=fake_connect)
+        with patch("module.transcriber.asyncio.sleep", stop_after_two):
+            with self.assertRaises(asyncio.CancelledError):
+                await translator.connect_and_run(asyncio.Queue())
+
+        self.assertIsNone(configs[0].system_instruction)
+        self.assertIn("Space opera.", configs[1].system_instruction.parts[0].text)
+
+        # And the running session gets torn down rather than waiting for the next dropout.
+        translator.set_context_file("contexts/space.json")
+        with patch("module.transcriber.asyncio.sleep", lambda _d: real_sleep(0)):
+            with self.assertRaises(ContextSwitch):
+                await asyncio.wait_for(translator.context_switch_loop(), 1.0)
 
     def test_log_session_summary(self):
         """ Shutdown summary logs accumulated tokens and cost """

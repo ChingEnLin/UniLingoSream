@@ -54,6 +54,8 @@ DEFAULT_UI_CONFIG = {
     "grow_up": True,         # False: anchor the top edge, so a bar near the top grows downward
 }
 
+CONTEXTS_DIR = "contexts"
+
 
 def _nscolor(hex_str, alpha=1.0):
     """ '#RRGGBB' -> NSColor. """
@@ -105,7 +107,21 @@ class _Controller(NSObject):
         d.set_font_size(sender.doubleValue(), persist=False)
         event = NSApplication.sharedApplication().currentEvent()
         if event is not None and event.type() == NSEventTypeLeftMouseUp:
-            d._persist_ui({"font_size": d._font_size})
+            d._persist("ui", {"font_size": d._font_size})
+
+    def chooseContext_(self, sender):
+        self._display.set_context(sender.representedObject())
+
+    def recenter_(self, sender):
+        self._display.move_to(sender.representedObject() == "top")
+
+    def toggleGrowUp_(self, sender):
+        """ Flip which edge stays put when the bar resizes (ui.grow_up). """
+        d = self._display
+        grow_up = not d.config["grow_up"]
+        d.config["grow_up"] = grow_up
+        sender.setState_(1 if grow_up else 0)
+        d._persist("ui", {"grow_up": grow_up})
 
 
 class DisplayTranslation:
@@ -113,6 +129,8 @@ class DisplayTranslation:
 
     def __init__(self, config_path="config.json", config=None):
         self.config_path = config_path
+        # Set by main.py to TranscriberTranslator.set_context_file; the menu is inert without it.
+        self.on_context_change = None
         self.config = DEFAULT_UI_CONFIG.copy()
         if config is not None:
             self.config.update(config)
@@ -190,6 +208,25 @@ class DisplayTranslation:
         move_item.setTarget_(self._controller)
         menu.addItem_(move_item)
 
+        self._grow_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Grow upward", "toggleGrowUp:", ""
+        )
+        self._grow_item.setTarget_(self._controller)
+        self._grow_item.setState_(1 if self.config["grow_up"] else 0)
+        menu.addItem_(self._grow_item)
+
+        position_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Position", None, ""
+        )
+        menu.addItem_(position_item)
+        menu.setSubmenu_forItem_(self._build_position_menu(), position_item)
+
+        context_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Context", None, ""
+        )
+        menu.addItem_(context_item)
+        menu.setSubmenu_forItem_(self._build_context_menu(), context_item)
+
         # Font-size slider embedded as a custom menu-item view (drag instead of clicking).
         slider_view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 220, 34))
         slider_label = NSTextField.alloc().initWithFrame_(NSMakeRect(14, 7, 46, 20))
@@ -219,6 +256,79 @@ class DisplayTranslation:
 
         self.root = _RunLoopShim()
 
+    def _build_context_menu(self):
+        """ Submenu of contexts/*.json plus "None"; the active one carries the checkmark. """
+        active = load_config(self.config_path).get("api", {}).get("context_file") or ""
+        paths = [""]
+        if os.path.isdir(CONTEXTS_DIR):
+            paths += sorted(os.path.join(CONTEXTS_DIR, f)
+                            for f in os.listdir(CONTEXTS_DIR) if f.endswith(".json"))
+
+        submenu = NSMenu.alloc().init()
+        self._context_items = []
+        for path in paths:
+            title = os.path.basename(path)[:-len(".json")].replace("_", " ") if path else "None"
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "chooseContext:", ""
+            )
+            item.setTarget_(self._controller)
+            item.setRepresentedObject_(path)
+            item.setState_(1 if path == active else 0)
+            submenu.addItem_(item)
+            self._context_items.append(item)
+        return submenu
+
+    def _build_position_menu(self):
+        """ Submenu of screen anchors, same shape as the context list. Nothing is checked
+        until one is picked: the bar starts wherever it was last dragged. """
+        submenu = NSMenu.alloc().init()
+        self._position_items = {}
+        for title, where in (("Centered top", "top"), ("Centered bottom", "bottom")):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "recenter:", ""
+            )
+            item.setTarget_(self._controller)
+            item.setRepresentedObject_(where)
+            submenu.addItem_(item)
+            self._position_items[where] = item
+        return submenu
+
+    def move_to(self, top):
+        """ Re-center the bar on the active screen, snapped to its top or bottom edge.
+
+        The rescue hatch for a bar stranded off-screen: a window_x/window_y saved on an
+        external monitor can land outside every attached display once it is unplugged.
+        Width is recomputed here too, since the new screen may be a different size.
+        """
+        screen = NSScreen.mainScreen().visibleFrame()   # excludes menu bar and Dock
+        self._width = int(screen.size.width * self.config["window_width_percent"] / 100)
+        height = self.panel.frame().size.height
+        margin = self.config["bottom_margin"]
+        x = screen.origin.x + (screen.size.width - self._width) / 2
+        if top:
+            y = screen.origin.y + screen.size.height - height - margin
+        else:
+            y = screen.origin.y + margin
+        self.panel.setFrame_display_(NSMakeRect(x, y, self._width, height), True)
+        self.field.setFrame_(NSMakeRect(20, 10, self._width - 40, height - 20))
+
+        for where, item in self._position_items.items():
+            item.setState_(1 if where == ("top" if top else "bottom") else 0)
+
+        # A bar at the top has to grow downward, or long lines climb off the screen.
+        self.config["grow_up"] = not top
+        self._grow_item.setState_(0 if top else 1)
+        self._persist("ui", {"grow_up": not top})
+        self._persist_position()
+
+    def set_context(self, path):
+        """ Switch the translation context live and remember it in config.json. """
+        for item in self._context_items:
+            item.setState_(1 if item.representedObject() == path else 0)
+        self._persist("api", {"context_file": path})
+        if self.on_context_change:
+            self.on_context_change(path)
+
     def _resolve_origin(self, screen):
         """ Bottom-left origin (AppKit). Centered above bottom_margin unless config pins it.
 
@@ -245,25 +355,25 @@ class DisplayTranslation:
         self._apply_font()
         self.update_label(self.field.stringValue())  # re-fit height for the new size
         if persist:
-            self._persist_ui({"font_size": self._font_size})
+            self._persist("ui", {"font_size": self._font_size})
 
-    def _persist_ui(self, values):
-        """ Merge values into config.json's ui section. """
+    def _persist(self, section, values):
+        """ Merge values into one section of config.json. """
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            data.setdefault("ui", {}).update(values)
+            data.setdefault(section, {}).update(values)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            logger.warning("Could not persist ui settings: %s", e)
+            logger.warning("Could not persist %s settings: %s", section, e)
 
     def _persist_position(self):
         """ Save current position as top-left window_x/window_y (matches _resolve_origin
         and the Tk backend's convention). """
         frame = self.panel.frame()
         screen_h = NSScreen.mainScreen().frame().size.height
-        self._persist_ui({
+        self._persist("ui", {
             "window_x": int(frame.origin.x),
             "window_y": int(screen_h - frame.origin.y - frame.size.height),
         })
@@ -351,6 +461,51 @@ def _selfcheck():
     assert after.size.height > before.size.height, "window did not grow at all"
     assert abs((after.origin.y + after.size.height) - top) < 1, \
         "top edge moved: window grew upward despite grow_up=False"
+
+    # Menu: the Context submenu offers None + every contexts/*.json, choosing one forwards
+    # the path to the transcriber, and the grow toggle flips ui.grow_up.
+    d5 = DisplayTranslation(config={"grow_up": True})
+    d5.config_path = tmp
+    titles = [i.title() for i in d5._context_items]
+    assert titles[0] == "None", "context menu must offer a no-context option"
+    on_disk = sum(1 for f in os.listdir(CONTEXTS_DIR) if f.endswith(".json")) \
+        if os.path.isdir(CONTEXTS_DIR) else 0
+    assert len(titles) == on_disk + 1, f"context menu {titles} does not match {CONTEXTS_DIR}/"
+    switched = []
+    d5.on_context_change = switched.append
+    d5._controller.chooseContext_(d5._context_items[-1])
+    assert switched == [d5._context_items[-1].representedObject()], "context choice not forwarded"
+    assert d5._context_items[-1].state() == 1 and d5._context_items[0].state() == 0, \
+        "checkmark did not follow the chosen context"
+    d5._controller.toggleGrowUp_(d5._grow_item)
+    assert d5.config["grow_up"] is False, "grow toggle did not flip grow_up"
+    with open(tmp, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["ui"]["grow_up"] is False and "context_file" in saved["api"], \
+        f"menu choices not persisted: {saved}"
+
+    # Rescue: a bar stranded off-screen (unplugged monitor) must come back onto the
+    # active screen, centered and inside the visible frame, whichever edge is asked for.
+    d6 = DisplayTranslation(config={"grow_up": True})
+    d6.config_path = tmp
+    d6.panel.setFrame_display_(NSMakeRect(-9000, -9000, 400, 70), False)
+    assert [i.state() for i in d6._position_items.values()] == [0, 0], \
+        "no anchor should be checked before one is picked"
+    d6._controller.recenter_(d6._position_items["top"])
+    vis = NSScreen.mainScreen().visibleFrame()
+    f = d6.panel.frame()
+    assert abs((f.origin.x + f.size.width / 2) - (vis.origin.x + vis.size.width / 2)) < 1, \
+        f"bar {f} not horizontally centered on the active screen {vis}"
+    assert vis.origin.y <= f.origin.y and f.origin.y + f.size.height <= vis.origin.y + vis.size.height, \
+        f"bar {f} landed outside the visible frame {vis}"
+    assert d6.config["grow_up"] is False, "a top-aligned bar must grow downward"
+    assert d6._position_items["top"].state() == 1, "picked anchor not checked"
+    d6._controller.recenter_(d6._position_items["bottom"])
+    assert d6._position_items["top"].state() == 0, "checkmark did not follow the new anchor"
+    assert abs(d6.panel.frame().origin.y - (vis.origin.y + d6.config["bottom_margin"])) < 1, \
+        "bottom alignment ignored bottom_margin"
+    assert d6.config["grow_up"] is True, "a bottom-aligned bar must grow upward"
+
     os.remove(tmp)
     print("display_appkit self-check passed")
 
